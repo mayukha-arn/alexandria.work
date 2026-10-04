@@ -1,6 +1,6 @@
 # Running Alexandria locally
 
-Everything runs on one machine and nothing leaves it. You need: the repo's Python environment
+For local operation with Ollama, the app and models run on one machine. You need: the repo's Python environment
 (`.venv`), Ollama with two models, and Node for the web app. See `INSTALLED.md` for what was installed.
 
 ```bash
@@ -59,18 +59,39 @@ All colours live in one block of CSS variables at the top of `web/src/app/global
 semantic names (`bg-panel`, `text-mute`, `border-line`, `bg-brand`, ...), so editing that block restyles everything.
 Shared building blocks are in `web/src/components/ui.tsx`.
 
-## Putting it on the internet (from your own machine)
-The site is a static export hosted on Azure Static Web Apps; the API and the model stay on your machine and are reached
-through a Cloudflare quick tunnel (only the API port is exposed, never Ollama).
-```bash
-scripts/go-public.sh      # starts the API, opens the tunnel, points the site at it, redeploys
-scripts/stop-public.sh    # takes it off the internet
-caffeinate -dimsu &       # optional: stop the Mac sleeping while people use it
-```
-The tunnel address changes whenever it restarts, so run `go-public.sh` again after a reboot or a long sleep.
-The public API runs with `ALEXANDRIA_DOCS=0` and only accepts calls from your site's origins.
+## Hosted deployment
 
-**Before sharing it:** create accounts with a strong password (`python -m app.cli seed-demo`), and sign in to each one
-yourself first. Whoever signs in first to an account sets up its 2FA, so don't hand out a password until you have.
-The deployed site's address is `web/public/config.js` -> `apiUrl`; the deploy script rewrites it each time.
-`DEPLOYED_URL=https://... npx playwright test -c playwright.deployed.config.ts` checks a live site.
+The site is hosted on Azure Static Web Apps and calls the Azure VM API. The production addresses and service details are in `HANDOFF.md`.
+
+```bash
+# Build current source, then upload the static export. Requires an active Azure login.
+cd web && npm run build && cd ..
+scripts/deploy-site.sh
+```
+
+The deployment script writes the hosted API address to the exported `/config.js`. It leaves `web/public/config.js` unchanged so local builds can use `NEXT_PUBLIC_API_URL`.
+
+The API deployment procedure is documented at the top of `deploy/azure/setup.sh`; it pulls the current GitHub branch and restarts the services. Push the intended commit before running it. Preserve the existing CORS origins and Key Vault URL from `/etc/alexandria/env`.
+
+## Connect Claude
+
+For the hosted API, run this in your terminal and paste the key at the hidden prompt:
+
+```bash
+cd ~/alexandria
+scripts/set-llm-key.sh
+```
+
+The script checks the key before changing anything, stores it in Azure Key Vault, and restarts the hosted API. The startup message confirms the selected provider. Use `scripts/set-llm-key.sh --remove` to remove it and return to Ollama.
+
+For a local API, set `ALEXANDRIA_LLM_PROVIDER=auto` and `ANTHROPIC_API_KEY` in that API process's environment. The app does not automatically load a `.env` file. With `auto`, it selects Claude when a key is present and Ollama otherwise. Ollama still supplies embeddings for document search when Claude supplies the answers.
+
+## Existing Meridian accounts
+
+The seed script only runs on an empty database. To apply the time zones from the Meridian roster to existing accounts without changing their credentials, documents, or conversations:
+
+```bash
+sudo -u alexapi /opt/alexandria/.venv/bin/python /opt/alexandria/scripts/update_meridian_timezones.py --db /var/lib/alexandria/app.db
+```
+
+The operation updates only the 14 named Meridian accounts and can safely be repeated.

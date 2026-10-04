@@ -4,22 +4,22 @@ Used by scripts/make_seed_pdfs.py (renders the documents to PDF) and scripts/see
 into a fresh workspace through the normal pipeline: upload, a different person's signed approval, indexing).
 """
 
-# username, role, manager username
+# username, role, manager username, IANA time zone
 PEOPLE = [
-    ("priya.raman", "security_admin", None),
-    ("ben.foster", "security_admin", "priya.raman"),
-    ("daniel.okafor", "senior_eng", "priya.raman"),
-    ("sofia.martinez", "senior_eng", "priya.raman"),
-    ("alex.kim", "developer", "daniel.okafor"),
-    ("jordan.lee", "developer", "daniel.okafor"),
-    ("maya.chen", "support_lead", "priya.raman"),
-    ("marcus.johnson", "support_lead", "priya.raman"),
-    ("emily.davis", "support_rep", "maya.chen"),
-    ("noah.patel", "support_rep", "maya.chen"),
-    ("olivia.brooks", "product_manager", "priya.raman"),
-    ("hannah.wright", "legal_counsel", "priya.raman"),
-    ("grace.liu", "legal_counsel", "priya.raman"),
-    ("james.carter", "executive", "priya.raman"),
+    ("priya.raman", "security_admin", None, "America/New_York"),
+    ("ben.foster", "security_admin", "priya.raman", "Europe/London"),
+    ("daniel.okafor", "senior_eng", "priya.raman", "America/Chicago"),
+    ("sofia.martinez", "senior_eng", "priya.raman", "Europe/Madrid"),
+    ("alex.kim", "developer", "daniel.okafor", "America/Los_Angeles"),
+    ("jordan.lee", "developer", "daniel.okafor", "Asia/Singapore"),
+    ("maya.chen", "support_lead", "priya.raman", "America/New_York"),
+    ("marcus.johnson", "support_lead", "priya.raman", "America/Chicago"),
+    ("emily.davis", "support_rep", "maya.chen", "America/Denver"),
+    ("noah.patel", "support_rep", "maya.chen", "Asia/Kolkata"),
+    ("olivia.brooks", "product_manager", "priya.raman", "America/Los_Angeles"),
+    ("hannah.wright", "legal_counsel", "priya.raman", "America/New_York"),
+    ("grace.liu", "legal_counsel", "priya.raman", "Australia/Sydney"),
+    ("james.carter", "executive", "priya.raman", "America/New_York"),
 ]
 
 # file stem, title, access level, department, uploader, approver, body (light markdown: #, ##, -, paragraphs)

@@ -66,6 +66,6 @@ test.describe.serial("the 2FA setup QR code", () => {
     const secret = new URL(await scan(page)).searchParams.get("secret")!;    // only what the QR contained
     await page.getByLabel("6-digit code").fill(totp(secret));
     await page.getByRole("button", { name: /Turn on 2FA/ }).click();
-    await expect(page).toHaveURL(/\/chat\//);
+    await expect(page).toHaveURL(/\/ask\//);
   });
 });

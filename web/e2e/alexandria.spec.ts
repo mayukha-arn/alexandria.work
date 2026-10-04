@@ -19,7 +19,7 @@ async function enroll(page: Page, name: Name) {
   secrets[name] = (await page.getByTestId("totp-secret").textContent())!.trim();
   await page.getByLabel("6-digit code").fill(totp(secrets[name]));
   await page.getByRole("button", { name: /Turn on 2FA/ }).click();
-  await expect(page).toHaveURL(/\/chat\//);
+  await expect(page).toHaveURL(/\/ask\//);
 }
 
 async function signInAgain(page: Page, name: Name) {
@@ -29,7 +29,7 @@ async function signInAgain(page: Page, name: Name) {
   // the code used to enrol was for the current 30s step; a code may not be reused, so use the next one
   await page.getByLabel("6-digit code").fill(totp(secrets[name], 1));
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).toHaveURL(/\/chat\//);
+  await expect(page).toHaveURL(/\/ask\//);
 }
 
 // SHOTS=1 npx playwright test  saves screenshots of the key screens to test-results/shots/ for a visual check.
@@ -81,22 +81,23 @@ test.describe.serial("Alexandria in a real browser", () => {
     await expect(p.getByTestId("error")).toHaveText("invalid code");
     await p.getByLabel("6-digit code").fill(totp(secrets.rep, 1));
     await p.getByRole("button", { name: "Sign in" }).click();
-    await expect(p).toHaveURL(/\/chat\//);
+    await expect(p).toHaveURL(/\/ask\//);
   });
 
   test("the menu shows only what each role may use", async () => {
     const links = async (n: Name) => nav(pages[n]).getByRole("link").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""));
-    expect(await links("rep")).toEqual(["Chat", "Pings", "Ask Alexandria", "Knowledge base", "Security"]);
+    expect(await links("rep")).toEqual(["Ask Alexandria", "Requests", "Knowledge base", "People", "Team spaces", "Security"]);
     expect(await links("lead")).toContain("Review queue");
     expect(await links("lead")).toContain("Governance");
     expect(await links("lead")).not.toContain("Audit ledger".replace("Audit ledger", "nonexistent"));
     expect(await links("admin")).toEqual(expect.arrayContaining(["Review queue", "Audit ledger", "Governance"]));
-    expect(await links("exec")).toEqual(expect.arrayContaining(["Chat", "Pings", "Ask Alexandria"]));
+    expect(await links("exec")).toEqual(expect.arrayContaining(["Team spaces", "Requests", "Ask Alexandria"]));
     expect(await links("exec")).not.toContain("Review queue");
     expect(await links("exec")).not.toContain("Governance");
   });
 
   test("chat messages appear live for others, and department channels stay private", async () => {
+    for (const n of ["rep", "dev"] as Name[]) await go(pages[n], "Team spaces");
     await expect(pages.dev.getByRole("log")).toBeVisible();
     await pages.rep.getByRole("textbox", { name: "Message" }).fill("Hello from support, anyone around?");
     await pages.rep.getByRole("button", { name: "Send" }).click();
@@ -109,22 +110,55 @@ test.describe.serial("Alexandria in a real browser", () => {
     expect(await channels("dev")).not.toContain("support");
   });
 
+  test("People groups colleagues by department and supports search", async () => {
+    const p = pages.rep;
+    await go(p, "People");
+    await expect(p.getByRole("region", { name: "engineering people" })).toContainText("Lead2");
+    await expect(p.getByText(/London/)).toBeVisible();
+    await p.getByRole("textbox", { name: "Search people" }).fill("lead2");
+    await expect(p.getByRole("article")).toHaveCount(1);
+    await expect(p.getByRole("article")).toContainText("Lead2");
+    await p.getByRole("textbox", { name: "Search people" }).fill("unknown colleague");
+    await expect(p.getByText("No people match your search.")).toBeVisible();
+  });
+
+  test("ungrounded answers offer routing, with retry and a manual department fallback", async () => {
+    const p = pages.rep;
+    await go(p, "Ask Alexandria");
+    await expect(p.getByRole("region", { name: "Knowledge activity" })).toContainText("Requests waiting");
+    await p.route("**/route", (r) => r.abort(), { times: 1 });
+    await p.getByRole("textbox", { name: "Question", exact: true }).fill("Where is the nebulous zeppelin?");
+    await p.getByRole("button", { name: "Ask", exact: true }).click();
+    const routing = p.getByRole("region", { name: "Find someone to help" });
+    await expect(routing).toBeVisible();
+    await routing.getByRole("button", { name: "Retry recommendations" }).click();
+    await expect(routing).toContainText("No clear match yet.");
+    await routing.getByLabel("Choose a department").selectOption("legal");
+    await routing.getByRole("button", { name: "Send request", exact: true }).click();
+    await expect(p.getByRole("status")).toContainText("Request sent to Legal.");
+    await p.getByRole("button", { name: "Yes", exact: true }).click();
+    await expect(p.getByText("Glad that helped.")).toBeVisible();
+    await p.getByRole("button", { name: "No, find someone", exact: true }).click();
+    await expect(p.getByRole("link", { name: "View request" })).toBeVisible();
+    await expect(p.getByRole("button", { name: "Send request", exact: true })).toHaveCount(0);
+  });
+
   test("a ping to a department reaches its members live, and anyone qualified can answer", async () => {
-    for (const n of ["dev", "lead"] as Name[]) { await go(pages[n], "Pings"); await expect(pages[n].getByRole("button", { name: "New ping" })).toBeVisible(); }
-    await go(pages.rep, "Pings");
-    await pages.rep.getByRole("button", { name: "New ping" }).click();
+    for (const n of ["dev", "lead"] as Name[]) { await go(pages[n], "Requests"); await expect(pages[n].getByRole("button", { name: "New request" })).toBeVisible(); }
+    await go(pages.rep, "Requests");
+    await pages.rep.getByRole("button", { name: "New request" }).click();
     await pages.rep.getByLabel("Department").selectOption("engineering");
     await pages.rep.getByLabel("Subject").fill("Checkout returns a 500");
     await pages.rep.getByLabel("Details").fill("Since noon some customers get an HTTP 500 at checkout. What should I tell them?");
-    await pages.rep.getByRole("button", { name: "Send ping" }).click();
+    await pages.rep.getByRole("button", { name: "Send request" }).click();
     await expect(pages.rep.getByRole("heading", { name: "Checkout returns a 500" })).toBeVisible();
 
-    const inbox = pages.dev.getByRole("list", { name: "inbox pings" });
+    const inbox = pages.dev.getByRole("list", { name: "inbox requests" });
     await expect(inbox.getByText("Checkout returns a 500")).toBeVisible();                         // appears without reload
     await inbox.getByText("Checkout returns a 500").click();
     await pages.dev.getByRole("button", { name: "Pick this up" }).click();
     await expect(pages.dev.getByText("picked up by")).toBeVisible();
-    await expect(pages.lead.getByRole("list", { name: "inbox pings" }).getByText("claimed")).toBeVisible();   // lead sees it is taken
+    await expect(pages.lead.getByRole("list", { name: "inbox requests" }).getByText("claimed")).toBeVisible();   // lead sees it is taken
 
     const reply = pages.dev.getByRole("form", { name: "Reply" });
     await reply.getByLabel("Reply text").fill("The cart cache went stale after the 11:40 deploy. Flush the cart cache with `cache flush carts`, then restart the checkout worker and retest an order.");
@@ -134,7 +168,7 @@ test.describe.serial("Alexandria in a real browser", () => {
 
   test("an answer above the asker's clearance is hidden from them", async () => {
     const lead = pages.lead;
-    await lead.getByRole("list", { name: "inbox pings" }).getByText("Checkout returns a 500").click();
+    await lead.getByRole("list", { name: "inbox requests" }).getByText("Checkout returns a 500").click();
     const reply = lead.getByRole("form", { name: "Reply" });
     await reply.getByLabel("Visible to").selectOption("confidential");
     await expect(lead.getByText(/will see \[REDACTED\]/)).toBeVisible();
@@ -151,18 +185,18 @@ test.describe.serial("Alexandria in a real browser", () => {
 
   test("the asker resolves the ping", async () => {
     await pages.rep.getByRole("button", { name: "Mark resolved" }).click();
-    await expect(pages.rep.getByText("This ping is resolved.")).toBeVisible();
+    await expect(pages.rep.getByText("This request is resolved.")).toBeVisible();
   });
 
   test("the answerer drafts a knowledge article for review", async () => {
     test.setTimeout(240_000);
     const dev = pages.dev;
     await dev.reload();                                                                              // session survives a reload
-    await go(dev, "Pings");
+    await go(dev, "Requests");
     await dev.getByRole("tab", { name: "Inbox" }).click();
-    await expect(dev.getByRole("list", { name: "inbox pings" }).getByText("Checkout returns a 500")).toHaveCount(0);   // finished pings leave the inbox
+    await expect(dev.getByRole("list", { name: "inbox requests" }).getByText("Checkout returns a 500")).toHaveCount(0);   // finished pings leave the inbox
     await dev.getByLabel(/Show finished/).check();
-    await dev.getByRole("list", { name: "inbox pings" }).getByText("Checkout returns a 500").click();
+    await dev.getByRole("list", { name: "inbox requests" }).getByText("Checkout returns a 500").click();
     const panel = dev.getByRole("region", { name: "Turn this into knowledge" });
     await panel.getByRole("button", { name: "Draft an article" }).click();
     const draft = panel.getByLabel("Draft article");
@@ -221,10 +255,27 @@ test.describe.serial("Alexandria in a real browser", () => {
     await shot(p, "06-ask");
   });
 
+  test("feedback routes a grounded answer to an expert and marks their request as direct", async () => {
+    const p = pages.dev;
+    await p.getByRole("button", { name: "Yes", exact: true }).click();
+    await expect(p.getByRole("region", { name: "Find someone to help" })).toHaveCount(0);
+    await p.getByRole("button", { name: "No, find someone", exact: true }).click();
+    const routing = p.getByRole("region", { name: "Find someone to help" });
+    await expect(routing.getByRole("button", { name: "Send to queue (follow-the-sun)" }).first()).toBeVisible();
+    await expect(routing).toContainText(/Approved/);
+    await routing.getByRole("button", { name: "Ask Lead", exact: true }).click();
+    await expect(p.getByRole("status")).toContainText("Request sent to Lead.");
+    const href = await p.getByRole("link", { name: "View request" }).getAttribute("href");
+    await pages.lead.goto(href!);
+    await expect(pages.lead.getByRole("list", { name: "inbox requests" }).getByText("Asked you directly")).toBeVisible();
+    await expect(pages.lead.getByText("Asked you directly. Your qualified teammates can also help.")).toBeVisible();
+    await expect(pages.lead.getByRole("button", { name: "Pick this up" })).toBeVisible();
+  });
+
   test("in chat, @alexandria answers inline and @department sends a real ping", async () => {
     test.setTimeout(240_000);
     const p = pages.dev;
-    await go(p, "Chat");
+    await go(p, "Team spaces");
     const box = p.getByRole("textbox", { name: "Message" });
     await box.fill("@alex");
     await expect(p.getByRole("listbox", { name: "Mention" })).toContainText("Alexandria");
@@ -290,9 +341,9 @@ test.describe.serial("Alexandria in a real browser", () => {
     await p.getByRole("button", { name: "Continue" }).click();
     await p.getByLabel("6-digit code").fill(totp(secrets.exec, 1));
     await p.getByRole("button", { name: "Sign in" }).click();
-    await expect(p).toHaveURL(/\/chat\//);
-    await go(p, "Pings");
-    await expect(p.getByRole("button", { name: "New ping" })).toBeVisible();
+    await expect(p).toHaveURL(/\/ask\//);
+    await go(p, "Requests");
+    await expect(p.getByRole("button", { name: "New request" })).toBeVisible();
     await p.getByRole("button", { name: "Account" }).click();
     await expect(p.getByRole("menuitem", { name: "Sign out" })).toBeVisible();                      // reachable on a phone too
     expect(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);

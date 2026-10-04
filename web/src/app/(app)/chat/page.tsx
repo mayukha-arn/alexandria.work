@@ -127,17 +127,17 @@ export default function ChatPage() {
   return (
     <div className="flex h-full min-h-0 flex-col md:flex-row">
       {/* channel sidebar */}
-      <aside className="flex shrink-0 flex-col bg-side text-side-ink md:w-64">
+      <aside className="flex shrink-0 flex-col border-b border-line bg-panel2/60 text-ink md:w-64 md:border-b-0 md:border-r">
         <div className="flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-1 font-semibold">{ORG_NAME} <ChevronDown size={14} className="text-side-mute" /></div>
         </div>
         <div className="scroll-thin flex gap-4 overflow-x-auto px-2 pb-3 md:flex-1 md:flex-col md:overflow-y-auto">
-          <Section title="Channels">
+          <Section title="Team spaces">
             <ul className="flex gap-0.5 md:flex-col" aria-label="Channels">
               {channels.map((c) => (
                 <li key={c.id}>
                   <button onClick={() => setCurrent(c.id)} aria-current={c.id === current ? "true" : undefined}
-                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[14px] ${c.id === current ? "bg-side-active font-semibold text-white" : "text-side-mute hover:bg-side-hover hover:text-side-ink"}`}>
+                    className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[14px] ${c.id === current ? "bg-brand/10 font-semibold text-brand" : "text-side-mute hover:bg-side-hover hover:text-side-ink"}`}>
                     {c.kind === "department" ? <Lock size={14} /> : <Hash size={14} />} {c.name}
                   </button>
                 </li>
@@ -155,7 +155,7 @@ export default function ChatPage() {
               ))}
             </ul>
           </Section>
-          <Section title="Apps">
+          <Section title="Knowledge">
             <button onClick={() => { setDraft((x) => `@alexandria ${x}`); box.current?.focus(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[14px] text-side-mute hover:bg-side-hover hover:text-side-ink">
               <Sparkles size={14} className="text-brand2" /> Alexandria
             </button>

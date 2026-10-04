@@ -47,18 +47,18 @@ function Pings() {
   return (
     <div className="flex h-full flex-col md:flex-row">
       <div className="flex max-h-72 shrink-0 flex-col border-b border-line bg-panel2/60 md:max-h-none md:w-80 md:border-b-0 md:border-r">
-        <div className="px-4 pt-4"><h1 className="text-lg font-bold">Pings</h1><p className="text-xs text-mute">Questions to and from departments</p></div>
+        <div className="px-4 pt-4"><h1 className="text-lg font-bold">Requests</h1><p className="text-xs text-mute">Questions for departments and experts</p></div>
         <div className="flex items-center justify-between gap-2 px-4 py-3">
           <div role="tablist" className="flex gap-1">
             {(["inbox", "sent"] as const).map((b) => (
               <button key={b} role="tab" aria-selected={box === b} onClick={() => setBox(b)} className={`rounded-lg px-3 py-1 text-sm font-medium ${box === b ? "bg-brand/10 text-brand" : "text-mute hover:text-ink"}`}>{cap(b)}</button>
             ))}
           </div>
-          <button className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={14} /> New ping</button>
+          <button className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={14} /> New request</button>
         </div>
         <label className="flex items-center gap-2 px-4 pb-2 text-xs text-mute"><input type="checkbox" checked={finished} onChange={(e) => setFinished(e.target.checked)} /> Show finished (resolved or withdrawn)</label>
-        <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-2" aria-label={`${box} pings`}>
-          {list.length === 0 && <li><Empty>{box === "inbox" ? "Nothing waiting for your department." : "You haven't pinged anyone yet."}</Empty></li>}
+        <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-2" aria-label={`${box} requests`}>
+          {list.length === 0 && <li><Empty>{box === "inbox" ? "Nothing waiting for your department." : "You haven't sent any requests yet."}</Empty></li>}
           {list.map((p) => (
             <li key={p.id}>
               <button onClick={() => open(p.id)} aria-current={p.id === selected ? "true" : undefined}
@@ -66,6 +66,7 @@ function Pings() {
                 <Avatar name={box === "inbox" ? p.asker : p.to_department} size={32} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-semibold">{p.title}</span><Badge tone={TONE[p.status]}>{p.status}</Badge></div>
+                  {p.requested_id === me?.id && <div className="mt-1 text-xs font-semibold text-brand">Asked you directly</div>}
                   <div className="mt-0.5 truncate text-xs text-mute">{box === "inbox" ? `from ${displayName(p.asker)}` : <>to <span className="capitalize">{p.to_department}</span></>} · {timeAgo(p.updated_at)}</div>
                 </div>
               </button>
@@ -74,9 +75,9 @@ function Pings() {
         </ul>
       </div>
 
-      <section className="min-h-0 flex-1 overflow-y-auto" aria-label="Ping">
+      <section className="min-h-0 flex-1 overflow-y-auto" aria-label="Request">
         {creating && <NewPing onClose={() => setCreating(false)} onCreated={(p) => { setCreating(false); setBox("sent"); open(p.id); loadList(); }} />}
-        {!creating && !detail && <div className="p-6"><ErrorBanner error={error} /><Empty>Pick a ping, or ask another department a question.<br />You don't need to know who to ask: anyone qualified there can pick it up.</Empty></div>}
+        {!creating && !detail && <div className="p-6"><ErrorBanner error={error} /><Empty>Pick a request, or ask another department a question.<br />You don't need to know who to ask: anyone qualified there can pick it up.</Empty></div>}
         {!creating && detail && me && meta && <Thread key={detail.id} ping={detail} reload={() => { loadDetail(); loadList(); }} />}
       </section>
     </div>
@@ -96,7 +97,7 @@ function NewPing({ onClose, onCreated }: { onClose: () => void; onCreated: (p: P
     try { onCreated(await api<Ping>("/pings", { body: { to_department: to, title, body, min_role: level } })); }
     catch (err) { setError(err instanceof ApiError ? err.detail : "Could not send."); } finally { setBusy(false); } };
   return (
-    <form onSubmit={submit} className="mx-auto max-w-2xl space-y-4 p-4 md:p-6" aria-label="New ping">
+    <form onSubmit={submit} className="mx-auto max-w-2xl space-y-4 p-4 md:p-6" aria-label="New request">
       <h2 className="text-lg font-semibold">Ask a department</h2>
       <ErrorBanner error={error} />
       <div className="grid gap-4 sm:grid-cols-2">
@@ -107,7 +108,7 @@ function NewPing({ onClose, onCreated }: { onClose: () => void; onCreated: (p: P
       </div>
       <Field label="Subject"><input className="input" value={title} onChange={(e) => setTitle(e.target.value)} required maxLength={200} placeholder="e.g. Why does checkout return a 500?" /></Field>
       <Field label="Details"><textarea className="input min-h-[140px]" value={body} onChange={(e) => setBody(e.target.value)} required maxLength={4000} placeholder="What happened, what you've tried, who is affected…" /></Field>
-      <div className="flex gap-2"><button className="btn btn-primary" disabled={busy}>{busy ? "Sending…" : "Send ping"}</button><button type="button" className="btn" onClick={onClose}>Cancel</button></div>
+      <div className="flex gap-2"><button className="btn btn-primary" disabled={busy}>{busy ? "Sending…" : "Send request"}</button><button type="button" className="btn" onClick={onClose}>Cancel</button></div>
     </form>
   );
 }
@@ -127,9 +128,11 @@ function Thread({ ping, reload }: { ping: Ping; reload: () => void }) {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4 md:p-6">
       <header>
-        <div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-bold">{ping.title}</h2><Badge tone={TONE[ping.status]}>{ping.status}</Badge><Badge title="Minimum level needed to see this ping">{ping.min_role}</Badge></div>
+        <div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-bold">{ping.title}</h2><Badge tone={TONE[ping.status]}>{ping.status}</Badge><Badge title="Minimum level needed to see this request">{ping.min_role}</Badge></div>
         <p className="mt-1 text-sm text-mute">{displayName(ping.asker)} → <b className="capitalize">{ping.to_department}</b> · asked {timeAgo(ping.created_at)}{ping.claimed_by && <> · picked up by <b>{displayName(ping.claimed_by)}</b></>}</p>
       </header>
+      {ping.requested_id === me?.id && <Notice tone="brand">Asked you directly. Your qualified teammates can also help.</Notice>}
+      {ping.requested && ping.requested_id !== me?.id && <p className="text-sm text-mute">Requested {displayName(ping.requested)}</p>}
       <ErrorBanner error={error} />
       <div className="flex flex-wrap gap-2">
         {ping.can.claim && <button className="btn btn-primary" onClick={() => act(() => api(`/pings/${ping.id}/claim`, { method: "POST" }))}>Pick this up</button>}
@@ -155,7 +158,7 @@ function Thread({ ping, reload }: { ping: Ping; reload: () => void }) {
           <button className="btn btn-primary" disabled={!text.trim()}>{kind === "answer" ? "Post answer" : "Post comment"}</button>
         </form>
       )}
-      {!canSpeak && ["resolved", "closed"].includes(ping.status) && <Notice tone="brand">This ping is {ping.status}.</Notice>}
+      {!canSpeak && ["resolved", "closed"].includes(ping.status) && <Notice tone="brand">This request is {ping.status}.</Notice>}
 
       {(ping.can.draft || ping.draft) && <DraftPanel ping={ping} reload={reload} />}
     </div>

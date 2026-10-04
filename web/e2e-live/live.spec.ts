@@ -10,7 +10,7 @@ const pw = readFileSync(`${SECRETS}/meridian-accounts.txt`, "utf8").split("\n").
 const keyFile = `${SECRETS}/meridian-2fa.txt`;
 const saved = () => (existsSync(keyFile) ? readFileSync(keyFile, "utf8") : "").split("\n").find((l) => l.startsWith(USER + " "))?.split(/\s+/)[1];
 
-test("live: sign in, chat history, @alexandria answers with sources", async ({ page }) => {
+test("live: directory, team history, and Ask hub with expert routing", async ({ page }) => {
   test.setTimeout(300_000);
   await page.goto("/login/");
   await page.getByLabel("Username").fill(USER);
@@ -29,16 +29,25 @@ test("live: sign in, chat history, @alexandria answers with sources", async ({ p
     await code.fill(totp(saved()!));
     await page.getByRole("button", { name: "Sign in" }).click();
   }
-  await expect(page).toHaveURL(/\/chat\//);
+  await expect(page).toHaveURL(/\/ask\//);
+  await expect(page.getByRole("region", { name: "Knowledge activity" })).toBeVisible();
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "People", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "People", exact: true })).toBeVisible();
+  await expect(page.getByText("Priya Raman", { exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/live-people.png" });
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Team spaces", exact: true }).click();
   await expect(page.getByRole("log")).toContainText("4.2 launch");
   await page.screenshot({ path: "test-results/live-chat.png" });
   const t0 = Date.now();
-  await page.getByRole("textbox", { name: "Message" }).fill("@alexandria What is the payroll cutoff for the Thanksgiving week?");
-  await page.getByRole("button", { name: "Send" }).click();
-  const answer = page.getByRole("log").getByTestId("answer").last();
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Ask Alexandria", exact: true }).click();
+  await page.getByRole("textbox", { name: "Question", exact: true }).fill("What is the payroll cutoff for the Thanksgiving week?");
+  await page.getByRole("button", { name: "Ask", exact: true }).click();
+  const answer = page.getByTestId("answer").last();
   await expect(answer).toBeVisible({ timeout: 240_000 });
-  await expect(page.getByRole("log").getByText(/Grounded in documents|Not found|couldn't/i).last()).toBeVisible({ timeout: 240_000 });
+  await expect(page.getByText(/Grounded in documents|Not found|couldn't/i).last()).toBeVisible({ timeout: 240_000 });
   console.log("ANSWER_SECONDS", ((Date.now() - t0) / 1000).toFixed(1));
-  console.log("ANSWER", (await answer.innerText()).slice(0, 500).replace(/\n/g, " "));
+  await page.getByRole("button", { name: "No, find someone", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Find someone to help" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send to queue (follow-the-sun)" }).first()).toBeVisible();
   await page.screenshot({ path: "test-results/live-answer.png" });
 });

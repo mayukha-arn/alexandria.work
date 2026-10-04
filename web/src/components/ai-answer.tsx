@@ -49,7 +49,9 @@ export function AiAnswer({ question, compact = false, onDone }: { question: stri
           {done && (
             <div className="mt-3 space-y-2 border-t border-brand/10 pt-3">
               <div className="flex flex-wrap items-center gap-2 text-xs">
-                {done.grounded
+                {!done.sources.length
+                  ? <span className="inline-flex items-center gap-1 rounded-full bg-warn/10 px-2 py-0.5 font-medium text-warn"><ShieldAlert size={12} />No matching knowledge found</span>
+                  : done.grounded
                   ? <span className="inline-flex items-center gap-1 rounded-full bg-good/10 px-2 py-0.5 font-medium text-good"><BadgeCheck size={12} />Grounded in documents</span>
                   : <span className="inline-flex items-center gap-1 rounded-full bg-warn/10 px-2 py-0.5 font-medium text-warn"><ShieldAlert size={12} />Not tied to documents: treat as unverified</span>}
                 <span className="rounded-full bg-panel2 px-2 py-0.5 text-mute">{done.persona} view</span>

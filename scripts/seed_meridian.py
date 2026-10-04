@@ -54,9 +54,10 @@ def main() -> int:
 
     # people -------------------------------------------------------------------------------------------
     ids, lines = {}, []
-    for name, role, mgr in PEOPLE:
+    for name, role, mgr, timezone in PEOPLE:
         pw = pysecrets.token_urlsafe(12)
         ids[name] = store.create_user(name, security.hash_password(pw), role, manager_id=ids.get(mgr))["id"]
+        store.update_user(ids[name], timezone=timezone)
         lines.append(f"{name:<16} {pw}   ({R.ROLES[role].label if hasattr(R.ROLES[role], 'label') else role})")
     out = pathlib.Path(args.out) if args.out else settings.secrets_dir / "meridian-accounts.txt"
     fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

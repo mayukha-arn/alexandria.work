@@ -33,6 +33,7 @@ SECRET_FILES: Dict[str, str] = {
     "ledger-keys": "ledger.keys.json",
     "authority-keypair": "authority.json",
     "appinsights-env": "appinsights.env",       # one line: APPLICATIONINSIGHTS_CONNECTION_STRING=...
+    "llm-env": "llm.env",                       # one line: ANTHROPIC_API_KEY=... (hosted model key)
 }
 
 

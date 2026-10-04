@@ -14,6 +14,7 @@ RuntimeDirectoryMode=0700
 EnvironmentFile=/etc/alexandria/env
 ExecStartPre=/opt/alexandria/.venv/bin/python -m app.azure_secrets pull
 EnvironmentFile=-/run/alexandria/appinsights.env
+EnvironmentFile=-/run/alexandria/llm.env
 ExecStart=/opt/alexandria/.venv/bin/uvicorn app.server:build_app --factory --host 127.0.0.1 --port 8088 --proxy-headers
 Restart=on-failure
 RestartSec=5

@@ -80,7 +80,7 @@ export type Ping = {
   can: { claim: boolean; release: boolean; answer: boolean; comment: boolean; resolve: boolean; close: boolean; draft: boolean };
   messages?: PingMessage[];
 };
-export type Person = { id: string; username: string; department: string; role: string; online: boolean; timezone: string | null; local_time: string | null; working: boolean | null };
+export type Person = { id: string; username: string; department: string; role: string; online: boolean; on_call?: boolean; timezone: string | null; local_time: string | null; working: boolean | null };
 export type Expert = Person & { score: number; reasons: string[] };
 export type Route = { departments: { department: string; confidence: number; members: number; working_now: number }[]; experts: Expert[] };
 export type Insights = { documents: number; learned: number; resolved: number; waiting: number; median_first_answer_min: number | null };

@@ -53,19 +53,19 @@ export default function Login() {
 
   return (
     <main className="grid min-h-screen lg:grid-cols-[1.05fr_1fr]">
-      <aside className="relative hidden overflow-hidden bg-rail p-12 text-side-ink lg:flex lg:flex-col lg:justify-between">
+      <aside className="relative hidden overflow-hidden bg-rail p-12 text-white lg:flex lg:flex-col lg:justify-between">
         <div className="pointer-events-none absolute -right-24 -top-24 h-96 w-96 rounded-full bg-brand/40 blur-3xl" />
         <div className="pointer-events-none absolute -bottom-32 -left-20 h-96 w-96 rounded-full bg-brand2/25 blur-3xl" />
         <div className="relative flex items-center gap-2.5 text-lg font-semibold"><span className="ai-gradient flex h-9 w-9 items-center justify-center rounded-xl text-white"><Sparkles size={18} /></span>Alexandria</div>
         <div className="relative max-w-md">
-          <h2 className="text-4xl font-bold leading-tight tracking-tight text-white">Every answer your company has ever given, <span className="ai-text">one message away.</span></h2>
-          <ul className="mt-8 space-y-4 text-[15px] text-side-ink/90">
-            <li className="flex gap-3"><Inbox className="mt-0.5 shrink-0 text-brand2" size={19} /><span><b className="text-white">Ping a department, not a person.</b> Whoever is qualified picks it up.</span></li>
-            <li className="flex gap-3"><Sparkles className="mt-0.5 shrink-0 text-brand2" size={19} /><span><b className="text-white">Ask Alexandria.</b> Cited answers from approved documents, filtered to your clearance.</span></li>
-            <li className="flex gap-3"><Lock className="mt-0.5 shrink-0 text-brand2" size={19} /><span><b className="text-white">Provable.</b> Every approval is signed and anchored to a public ledger.</span></li>
+          <h2 className="text-4xl font-bold leading-tight tracking-tight text-white">Every answer your company has ever given, <span className="text-white">one message away.</span></h2>
+          <ul className="mt-8 space-y-4 text-[15px] text-white">
+            <li className="flex gap-3"><Inbox className="mt-0.5 shrink-0 text-white" size={19} /><span><b>Ping a department, not a person.</b> Whoever is qualified picks it up.</span></li>
+            <li className="flex gap-3"><Sparkles className="mt-0.5 shrink-0 text-white" size={19} /><span><b>Ask Alexandria.</b> Cited answers from approved documents, filtered to your clearance.</span></li>
+            <li className="flex gap-3"><Lock className="mt-0.5 shrink-0 text-white" size={19} /><span><b>Provable.</b> Every approval is signed and anchored to a public ledger.</span></li>
           </ul>
         </div>
-        <p className="relative text-xs text-side-mute">{ORG_NAME} workspace · protected by two-factor authentication</p>
+        <p className="relative text-xs text-white">{ORG_NAME} workspace · protected by two-factor authentication</p>
       </aside>
 
       <div className="flex flex-col justify-center gap-6 p-6 sm:p-10">

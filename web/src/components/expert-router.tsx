@@ -41,8 +41,8 @@ export function ExpertRouter({ question }: { question: string }) {
 
   if (sent) return <div className="rounded-xl border border-good/25 bg-good/5 p-4 text-sm" role="status">
     <p className="font-semibold">Request sent to {sent.requested ? displayName(sent.requested) : cap(sent.to_department)}.</p>
-    <p className="mt-1 text-mute">Their qualified teammates can also help. You can follow the answer in Requests.</p>
-    <Link className="mt-3 inline-flex items-center gap-1 font-semibold text-brand" href={`/pings/?id=${sent.id}`}>View request <ArrowRight size={14} /></Link>
+    <p className="mt-1 text-mute">Their qualified teammates can also help. Continue the conversation in Requests.</p>
+    <Link className="mt-3 inline-flex items-center gap-1 font-semibold text-brand" href={`/pings/?id=${sent.id}`}>Open conversation <ArrowRight size={14} /></Link>
   </div>;
 
   return <section className="space-y-4 rounded-2xl border border-line bg-panel2/50 p-4" aria-label="Find someone to help">

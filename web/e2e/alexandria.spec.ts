@@ -139,7 +139,7 @@ test.describe.serial("Alexandria in a real browser", () => {
     await p.getByRole("button", { name: "Yes", exact: true }).click();
     await expect(p.getByText("Glad that helped.")).toBeVisible();
     await p.getByRole("button", { name: "No, find someone", exact: true }).click();
-    await expect(p.getByRole("link", { name: "View request" })).toBeVisible();
+    await expect(p.getByRole("link", { name: "Open conversation" })).toBeVisible();
     await expect(p.getByRole("button", { name: "Send request", exact: true })).toHaveCount(0);
   });
 
@@ -265,7 +265,7 @@ test.describe.serial("Alexandria in a real browser", () => {
     await expect(routing).toContainText(/Approved/);
     await routing.getByRole("button", { name: "Ask Lead", exact: true }).click();
     await expect(p.getByRole("status")).toContainText("Request sent to Lead.");
-    const href = await p.getByRole("link", { name: "View request" }).getAttribute("href");
+    const href = await p.getByRole("link", { name: "Open conversation" }).getAttribute("href");
     await pages.lead.goto(href!);
     await expect(pages.lead.getByRole("list", { name: "inbox requests" }).getByText("Asked you directly")).toBeVisible();
     await expect(pages.lead.getByText("Asked you directly. Your qualified teammates can also help.")).toBeVisible();

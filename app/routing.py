@@ -26,6 +26,7 @@ import roles as R
 from .store import Store
 
 WORK_START, WORK_END = 9, 18          # local working hours, Monday to Friday
+ON_CALL = frozenset({"maya.chen", "daniel.okafor", "olivia.brooks", "hannah.wright", "priya.raman"})
 STOP = frozenset("a an the and or of to in on for with is are was were be been it its this that these those how what "
                  "when where which who why do does did can could should would i you we they my our your from at by as "
                  "if not no me us any anyone know about get got has have need there their them than then so just "
@@ -75,7 +76,8 @@ class Router:
         u = Store.as_role_user(row)
         return {"id": row["id"], "username": row["username"], "department": u.department,
                 "role": u.role_def.label if hasattr(u.role_def, "label") else row["role"],
-                "online": row["id"] in online, **availability(row.get("timezone"), self.now())}
+                "online": row["id"] in online, "on_call": row["username"] in ON_CALL,
+                **availability(row.get("timezone"), self.now())}
 
     def directory(self) -> List[Dict[str, Any]]:
         online = self.online()
@@ -181,7 +183,7 @@ class Router:
         for d in ranked[:3]:
             team = roster(d)
             departments.append({"department": d, "confidence": round(dept[d] / top, 2), "members": len(team),
-                                "working_now": sum(1 for p in team if p["working"] or p["online"])})
+                                "working_now": sum(1 for p in team if p["working"] or p["online"] or p["on_call"])})
 
         # people who may answer, in the suggested departments (plus anyone with direct evidence)
         cands: Dict[str, float] = {}
@@ -196,7 +198,7 @@ class Router:
         experts = []
         for uid, s in cands.items():
             p = self.person(users[uid], online)
-            avail = 1.0 if (p["online"] or p["working"]) else 0.0
+            avail = 1.0 if (p["online"] or p["working"] or p["on_call"]) else 0.0
             w = why.get(uid, {"wrote": [], "approved": [], "answered": 0})
             reasons = [f"Wrote “{t}”" for t in w["wrote"][:2]] + [f"Approved “{t}”" for t in w["approved"][:1]]
             if w["answered"]:

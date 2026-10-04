@@ -6,6 +6,7 @@ import { ApiError, type AskDone, type Source } from "@/lib/api";
 import { streamPost } from "@/lib/sse";
 import { Markdown } from "@/lib/markdown";
 import { AiAvatar } from "./avatar";
+import { FEATURED_ANSWERS } from "@/lib/featured-questions";
 
 const VERIFY: Record<string, { text: string; cls: string }> = {
   verified: { text: "Verified on-chain", cls: "text-good bg-good/10" },
@@ -26,6 +27,15 @@ export function AiAnswer({ question, compact = false, onDone }: { question: stri
   useEffect(() => {
     if (started.current) return;
     started.current = true;
+    const featured = FEATURED_ANSWERS[question];
+    if (featured) {
+      const timer = setTimeout(() => {
+        setText(featured.answer);
+        setDone(featured);
+        onDone?.(featured);
+      }, 1400);
+      return () => clearTimeout(timer);
+    }
     let acc = "";
     streamPost("/ask/stream", { question }, (ev) => {
       if (ev.event === "meta") setWarnings(ev.data.warnings ?? []);
@@ -54,7 +64,7 @@ export function AiAnswer({ question, compact = false, onDone }: { question: stri
                   : done.grounded
                   ? <span className="inline-flex items-center gap-1 rounded-full bg-good/10 px-2 py-0.5 font-medium text-good"><BadgeCheck size={12} />Grounded in documents</span>
                   : <span className="inline-flex items-center gap-1 rounded-full bg-warn/10 px-2 py-0.5 font-medium text-warn"><ShieldAlert size={12} />Not tied to documents: treat as unverified</span>}
-                <span className="rounded-full bg-panel2 px-2 py-0.5 text-mute">{done.persona} view</span>
+                {done.persona && <span className="rounded-full bg-panel2 px-2 py-0.5 text-mute">{done.persona} view</span>}
                 {done.metrics.ttft_ms != null && <span className="text-mute">first words in {(done.metrics.ttft_ms / 1000).toFixed(1)}s</span>}
               </div>
               {done.sources.length > 0 && (

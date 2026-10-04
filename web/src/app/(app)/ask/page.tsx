@@ -9,12 +9,7 @@ import { Avatar } from "@/components/avatar";
 import { ExpertRouter } from "@/components/expert-router";
 import { InsightsStrip } from "@/components/insights-strip";
 import type { AskDone } from "@/lib/api";
-
-const SUGGESTIONS: Record<string, string[]> = {
-  support: ["What is Meridian's payroll cutoff for Thanksgiving week?", "A customer's direct deposit was returned with code R03. What should I tell them?", "When is a customer eligible for Next-Day Funding?"],
-  developer: ["How do I investigate an error in the payroll API?", "What are the rate limits on the payroll API?", "What changed in Meridian's 4.2 release?"],
-  executive: ["What are Meridian's compensation bands and merit guidelines?", "What changed in Meridian's 4.2 release?", "What is our data retention policy?"],
-};
+import { SUGGESTIONS } from "@/lib/featured-questions";
 
 export default function AskPage() {
   return <Suspense fallback={null}><Ask /></Suspense>;

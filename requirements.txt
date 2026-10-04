@@ -15,3 +15,4 @@ base58>=2.1
 cryptography>=42
 python-multipart>=0.0.9
 solders>=0.21
+chromadb>=1.0

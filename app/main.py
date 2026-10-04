@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import jwt
+import requests
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -21,6 +22,7 @@ import roles as R
 from . import security, wallet
 from .anchoring import Hasher, anchor_pending
 from .chain import ChainError
+from .rag import InputBlocked, ask as rag_ask
 from .redaction import render_event
 from .verify import verify_document
 from .config import Settings
@@ -82,8 +84,12 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
 log = logging.getLogger("alexandria.api")
 
 
+class AskBody(BaseModel):
+    question: str = Field(max_length=4000)
+
+
 def create_app(settings: Optional[Settings] = None, chain: Any = None,
-               anchor_interval: float = 10.0) -> FastAPI:
+               anchor_interval: float = 10.0, vectors: Any = None, llm: Any = None) -> FastAPI:
     """``chain`` is a SolanaChain (or MemoryChain in tests). With one, a background loop
     anchors the audit outbox; without one, events simply queue until a chain is configured."""
     settings = settings or Settings()
@@ -109,6 +115,7 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
 
     app = FastAPI(title="Alexandria", docs_url="/docs", lifespan=lifespan)
     app.state.settings, app.state.store, app.state.chain, app.state.hasher = settings, store, chain, hasher
+    app.state.vectors, app.state.llm = vectors, llm
     bearer = HTTPBearer(auto_error=False)
 
     def unauthorized(detail: str = "not authenticated") -> HTTPException:
@@ -324,6 +331,25 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         store.record_event("WALLET_RESET", actor.id, user_id, {"user": user_id}, department=tgt.department,
                            min_clearance=tgt.effective_clearance)
         return {"status": "reset"}
+
+    # ----------------------------------------------------------------- ask
+    @app.post("/ask")
+    def ask(body: AskBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        actor = auth.actor
+        if not R.can(actor, R.Cap.ASK):
+            raise HTTPException(403, "not permitted")
+        if vectors is None or llm is None:
+            raise HTTPException(503, "the knowledge engine is not configured")
+        try:
+            a = rag_ask(question=body.question, user=actor, store=store, vectors=vectors, llm=llm,
+                        registry_path=settings.registry_path, chain=chain)
+        except InputBlocked:
+            # The reasons are audited but not echoed: telling an attacker which rule fired helps them iterate.
+            raise HTTPException(400, "Your question was blocked by the security policy.")
+        except requests.RequestException:
+            raise HTTPException(503, "the language model is unavailable; try again shortly")
+        return {"answer": a.answer, "sources": a.sources, "grounded": a.grounded, "warnings": a.warnings,
+                "persona": a.persona, "metrics": a.metrics}
 
     # --------------------------------------------------------------- audit
     @app.get("/audit/ledger")

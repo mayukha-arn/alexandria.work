@@ -8,3 +8,4 @@ alexandria.db
 *.db
 node_modules/
 .env
+chroma_db/

@@ -17,6 +17,8 @@ All installs are user-level (no sudo) unless noted. Disk figures are approximate
 | 2026-10-03 | Rust 1.89.0 toolchain (pinned by the Anchor workspace) + Solana SBF platform-tools | 1.89.0 | `~/.rustup`, `~/.cache/solana` | `anchor build` of the audit program | `rustup toolchain uninstall 1.89.0`, `rm -rf ~/.cache/solana` |
 | 2026-10-03 | Python: solders (JSON-RPC is done with `requests`; solana-py 0.41 is async-only, so not used) | 0.29.0 | `~/alexandria/.venv` | Build / sign Solana transactions | with the env |
 | 2026-10-03 | Build cache `solana/target` (gitignored) | ~2 GB | `~/alexandria/solana/target` | Anchor / cargo build output | `cd solana && cargo clean` (rebuild when needed) |
+| 2026-10-03 | Ollama model `nomic-embed-text` | 274 MB | `~/.ollama/models` | Local embeddings (long context; MiniLM truncates at ~256 tokens) | `ollama rm nomic-embed-text` |
+| 2026-10-03 | Python: chromadb (+ onnxruntime etc.) | 1.5.9 | `~/alexandria/.venv` (venv now ~780 MB) | Layer 2 vector store; data in gitignored `./chroma_db` | with the env |
 
 PATH additions needed in a shell (not written to any dotfile):
 `export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.azure-cli-venv/bin:$PATH"`

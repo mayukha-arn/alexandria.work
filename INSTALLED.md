@@ -19,6 +19,9 @@ All installs are user-level (no sudo) unless noted. Disk figures are approximate
 | 2026-10-03 | Build cache `solana/target` (gitignored) | ~2 GB | `~/alexandria/solana/target` | Anchor / cargo build output | `cd solana && cargo clean` (rebuild when needed) |
 | 2026-10-03 | Ollama model `nomic-embed-text` | 274 MB | `~/.ollama/models` | Local embeddings (long context; MiniLM truncates at ~256 tokens) | `ollama rm nomic-embed-text` |
 | 2026-10-03 | Python: chromadb (+ onnxruntime etc.) | 1.5.9 | `~/alexandria/.venv` (venv now ~780 MB) | Layer 2 vector store; data in gitignored `./chroma_db` | with the env |
+| 2026-10-03 | Web app dependencies (`npm install`: next 14, react 18, tailwind, qrcode, tweetnacl, bs58, lucide-react, vitest, @playwright/test) | see `web/package.json` | `~/alexandria/web/node_modules` (~344 MB, gitignored) | The Next.js frontend | `rm -rf web/node_modules` (reinstall with `npm install --cache /tmp/npm-cache`) |
+| 2026-10-03 | Playwright Chromium headless shell | 153 (v1243) | `~/Library/Caches/ms-playwright` (~94 MB) | Real-browser end-to-end tests | `rm -rf ~/Library/Caches/ms-playwright` |
+| 2026-10-03 | Static site build `web/out` and `web/.next` (gitignored) | n/a | `~/alexandria/web` | Build output | `rm -rf web/out web/.next` |
 
 PATH additions needed in a shell (not written to any dotfile):
 `export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.azure-cli-venv/bin:$PATH"`

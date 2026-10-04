@@ -156,7 +156,12 @@ class DocumentService:
     def pending(self, user: R.User) -> List[Dict[str, Any]]:
         if not R.can(user, R.Cap.APPROVE_DOC):
             raise DocError(403, "not permitted")
-        return [i for i in il.list_pending_updates(self.registry) if self._reviewable(user, i)]
+        out = []
+        for item in il.list_pending_updates(self.registry):
+            if self._reviewable(user, item):
+                row = self.store.get_user(item["uploader_id"]) if item["uploader_id"] else None
+                out.append({**item, "uploader": row["username"] if row else None})
+        return out
 
     def _item(self, user: R.User, staged_id: int) -> Dict[str, Any]:
         if not R.can(user, R.Cap.APPROVE_DOC):

@@ -137,6 +137,12 @@ def test_with_approval_switched_off_the_prd_behaviour_returns(tmp_path):
     assert w2.upload("dev", KB).json()["status"] == "pending_approval"        # juniors still reviewed
 
 
+def test_the_review_queue_names_the_uploader(w):
+    w.upload("dev", BASE_LINES)
+    item = w.client.get("/documents/pending", headers=H(w.tok["lead"])).json()[0]
+    assert item["uploader"] == "dev" and item["uploader_id"] == w.row["dev"]["id"]
+
+
 def test_junior_new_document_waits_for_review_and_is_invisible_meanwhile(w):
     r = w.upload("dev", BASE_LINES)
     body = r.json()

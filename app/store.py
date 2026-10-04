@@ -153,6 +153,15 @@ class Store:
                             (jti, user_id)).fetchone()
         return bool(row) and not row["revoked"] and row["expires_at"] > time.time()
 
+    def session_created_at(self, jti: str) -> Optional[float]:
+        with self.tx() as c:
+            row = c.execute("SELECT created_at FROM sessions WHERE jti = ?", (jti,)).fetchone()
+        return row["created_at"] if row else None
+
+    def extend_session(self, jti: str, expires_at: float) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE sessions SET expires_at = ? WHERE jti = ? AND revoked = 0", (expires_at, jti))
+
     def list_sessions(self, user_id: str) -> List[Dict[str, Any]]:
         with self.tx() as c:
             rows = c.execute("SELECT jti, ip, user_agent, created_at, expires_at FROM sessions "

@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* THE THEME. Every colour in the app comes from these variables (space-separated RGB).
+   Edit this block to restyle everything; add a class (e.g. .light) with another set to switch themes. */
+:root {
+  --bg: 11 15 25;
+  --panel: 17 24 39;
+  --panel2: 24 33 52;
+  --line: 40 52 77;
+  --ink: 226 232 240;
+  --mute: 148 163 184;
+  --brand: 99 102 241;
+  --good: 52 211 153;
+  --warn: 251 191 36;
+  --bad: 248 113 113;
+}
+
+html, body { background: rgb(var(--bg)); color: rgb(var(--ink)); }
+body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+* { scrollbar-color: rgb(var(--line)) transparent; }
+:focus-visible { outline: 2px solid rgb(var(--brand)); outline-offset: 2px; }
+
+@layer components {
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-panel2 px-3 py-1.5 text-sm font-medium text-ink transition hover:border-brand disabled:cursor-not-allowed disabled:opacity-50; }
+  .btn-primary { @apply border-brand bg-brand text-white hover:opacity-90; }
+  .btn-danger { @apply border-bad/60 text-bad hover:border-bad; }
+  .input { @apply w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-ink placeholder:text-mute focus:border-brand; }
+  .card { @apply rounded-xl border border-line bg-panel; }
+  .label { @apply mb-1 block text-xs font-medium uppercase tracking-wide text-mute; }
+}

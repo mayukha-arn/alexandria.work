@@ -283,3 +283,71 @@ def test_events_have_hashes_for_anchoring(env):
     import hashlib
     assert ev["payload_hash"] == hashlib.sha256(ev["payload"].encode()).hexdigest()
     assert ev["min_clearance"] == 60
+
+
+# ------------------------------------------------------------------- refresh & CORS
+def test_refresh_extends_the_same_session_and_logout_ends_both_tokens(env):
+    client, store, settings = env
+    make_user(store, "alice", "developer")
+    first, _, _ = enroll(client, "alice")
+    r = client.post("/auth/refresh", headers=H(first))
+    assert r.status_code == 200
+    second = r.json()["access_token"]
+    assert jwt.decode(second, options={"verify_signature": False})["jti"] == jwt.decode(first, options={"verify_signature": False})["jti"]
+    assert client.get("/auth/me", headers=H(second)).status_code == 200
+    assert len(client.get("/auth/sessions", headers=H(second)).json()) == 1       # still one session, not two
+    client.post("/auth/logout", headers=H(second))
+    assert client.get("/auth/me", headers=H(first)).status_code == 401           # the old token dies with the session
+    assert client.post("/auth/refresh", headers=H(second)).status_code == 401    # and it cannot be refreshed
+
+
+def test_refresh_stops_at_the_sessions_absolute_limit(env):
+    import sqlite3
+    client, store, settings = env
+    make_user(store, "alice", "developer")
+    access, _, _ = enroll(client, "alice")
+    with sqlite3.connect(settings.db_path) as c:
+        c.execute("UPDATE sessions SET created_at = ?", (time.time() - settings.session_max_seconds - 5,))
+    r = client.post("/auth/refresh", headers=H(access))
+    assert r.status_code == 401 and "too old" in r.json()["detail"]
+
+
+def test_refresh_never_outlives_the_session_cap(env):
+    import sqlite3
+    client, store, settings = env
+    make_user(store, "alice", "developer")
+    access, _, _ = enroll(client, "alice")
+    with sqlite3.connect(settings.db_path) as c:                                   # 100s before the absolute limit
+        c.execute("UPDATE sessions SET created_at = ?", (time.time() - settings.session_max_seconds + 100,))
+    out = client.post("/auth/refresh", headers=H(access)).json()
+    assert out["expires_in"] <= 100
+
+
+def test_only_a_real_session_token_can_be_refreshed(env):
+    client, store, _ = env
+    make_user(store, "alice", "developer")
+    r = client.post("/auth/login", json={"username": "alice", "password": PW}).json()
+    assert client.post("/auth/refresh", headers=H(r["enroll_token"])).status_code == 401
+    assert client.post("/auth/refresh").status_code == 401
+
+
+def test_cors_allows_only_the_configured_web_origins(env):
+    client, _, settings = env
+    ok = client.options("/auth/login", headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST",
+                                                 "Access-Control-Request-Headers": "authorization,content-type"})
+    assert ok.headers.get("access-control-allow-origin") == "http://localhost:3000"
+    assert "authorization" in ok.headers.get("access-control-allow-headers", "").lower()
+    bad = client.options("/auth/login", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
+    assert "access-control-allow-origin" not in bad.headers
+    assert "access-control-allow-credentials" not in ok.headers                     # bearer tokens, not cookies
+
+
+def test_meta_lists_what_forms_need_and_requires_a_session(env):
+    client, store, _ = env
+    make_user(store, "alice", "developer")
+    tok, _, _ = enroll(client, "alice")
+    m = client.get("/meta", headers=H(tok)).json()
+    assert "engineering" in m["departments"] and m["classifications"]["confidential"] == 60
+    assert {r["name"] for r in m["roles"]} >= {"developer", "senior_eng", "security_admin"}
+    assert "approve_doc" in m["capabilities"] and "chat" in m["capabilities"]
+    assert client.get("/meta").status_code == 401

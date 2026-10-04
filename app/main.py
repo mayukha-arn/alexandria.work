@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import jwt
 import requests
 from starlette.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -163,6 +164,9 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
 
     messaging = Messaging(store, hub, llm=llm, docs=docs)
     app = FastAPI(title="Alexandria", docs_url="/docs", lifespan=lifespan)
+    # Bearer tokens, not cookies, so no credentialed cross-site requests: only the listed web origins may read responses.
+    app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
+                       allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Authorization", "Content-Type"])
     app.state.settings, app.state.store, app.state.chain, app.state.hasher = settings, store, chain, hasher
     app.state.vectors, app.state.llm, app.state.docs = vectors, llm, docs
     app.state.hub, app.state.messaging = hub, messaging
@@ -282,6 +286,28 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
             raise HTTPException(401, "invalid code")
         store.update_user(user["id"], totp_last_step=step)
         return start_session(request, user)
+
+    @app.post("/auth/refresh")
+    def refresh(auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """Keep a live session going without redoing 2FA: a fresh short-lived token for the SAME
+        session (so logout/revocation still ends both), until the session's absolute limit."""
+        jti, now = auth.claims["jti"], time.time()
+        started = store.session_created_at(jti) or now
+        remaining = started + settings.session_max_seconds - now
+        if remaining <= 0:
+            raise unauthorized("session too old; sign in again")
+        ttl = int(min(settings.access_ttl, remaining))
+        token, _, exp = security.issue_token(settings, auth.user["id"], "access", ttl, jti=jti)
+        store.extend_session(jti, exp)
+        return {"access_token": token, "token_type": "bearer", "expires_in": ttl}
+
+    @app.get("/meta")
+    def meta(_: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """What forms need to offer choices: departments, classification levels, roles, rights."""
+        return {"departments": R.DEPARTMENTS, "classifications": R.CLASSIFICATIONS,
+                "roles": [{"name": r.name, "label": r.label, "department": r.department, "level": r.level,
+                           "clearance": r.clearance, "persona": r.persona} for r in R.ROLES.values()],
+                "capabilities": [c.value for c in R.Cap]}
 
     @app.get("/auth/me")
     def me(auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:

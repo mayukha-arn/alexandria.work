@@ -7,6 +7,7 @@ import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import List
 
 from .keyring import Cipher, Keyring, make_fernet_key
 
@@ -25,6 +26,9 @@ class Settings:
     challenge_ttl: int = 5 * 60     # wallet signature challenge
     lock_after: int = 5             # consecutive failures
     lock_seconds: int = 5 * 60
+    session_max_seconds: int = 8 * 3600   # a session can be refreshed, but never past this
+    cors_origins: List[str] = field(default_factory=lambda: [o.strip() for o in os.getenv(
+        "ALEXANDRIA_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()])
     min_password_length: int = 12
     # Four-eyes: every document, whoever uploads it, needs one approval from a different person
     # before it goes live. ALEXANDRIA_REQUIRE_APPROVAL=0 restores the PRD's senior auto-approve.

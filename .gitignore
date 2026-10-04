@@ -9,3 +9,4 @@ alexandria.db
 node_modules/
 .env
 chroma_db/
+.e2e-state/

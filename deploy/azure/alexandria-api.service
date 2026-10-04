@@ -1,0 +1,33 @@
+[Unit]
+Description=Alexandria API
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+
+[Service]
+User=alexapi
+Group=alexapi
+WorkingDirectory=/opt/alexandria
+# Secrets come from Azure Key Vault (this VM's managed identity) into RAM: /run/alexandria is a tmpfs that
+# systemd creates for the service and deletes when it stops, so no secret is ever written to disk.
+RuntimeDirectory=alexandria
+RuntimeDirectoryMode=0700
+EnvironmentFile=/etc/alexandria/env
+ExecStartPre=/opt/alexandria/.venv/bin/python -m app.azure_secrets pull
+EnvironmentFile=-/run/alexandria/appinsights.env
+ExecStart=/opt/alexandria/.venv/bin/uvicorn app.server:build_app --factory --host 127.0.0.1 --port 8088 --proxy-headers
+Restart=on-failure
+RestartSec=5
+# Hardening: the service can write only its own data directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/alexandria
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target

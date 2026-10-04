@@ -24,6 +24,7 @@ MIN_CLEARANCE, MAX_CLEARANCE = 0, 100
 
 
 class Cap(str, Enum):
+    CHAT = "chat"                            # post in your department's channel and the company channel
     ASK = "ask"                              # query the knowledge engine
     PING_DEPARTMENT = "ping_department"      # send a question to a department
     ANSWER_PING = "answer_ping"              # answer a ping addressed to your department
@@ -37,11 +38,11 @@ class Cap(str, Enum):
 
 
 # What each level can do. Levels stack: senior includes member, admin includes senior.
-_MEMBER = frozenset({Cap.ASK, Cap.PING_DEPARTMENT, Cap.ANSWER_PING, Cap.UPLOAD_DOC, Cap.PROPOSE_EDIT})
+_MEMBER = frozenset({Cap.CHAT, Cap.ASK, Cap.PING_DEPARTMENT, Cap.ANSWER_PING, Cap.UPLOAD_DOC, Cap.PROPOSE_EDIT})
 _SENIOR = _MEMBER | {Cap.APPROVE_DOC, Cap.VIEW_AUDIT, Cap.MANAGE_ACCESS}
 _ADMIN = _SENIOR | {Cap.PURGE_DOCUMENT, Cap.EXPORT_COMPLIANCE}
 # Executives read and ask; they do not write to or approve the source of truth.
-_VIEWER = frozenset({Cap.ASK, Cap.PING_DEPARTMENT, Cap.VIEW_AUDIT})
+_VIEWER = frozenset({Cap.CHAT, Cap.ASK, Cap.PING_DEPARTMENT, Cap.VIEW_AUDIT})
 
 LEVEL_CAPS: Dict[str, FrozenSet[Cap]] = {
     "member": _MEMBER, "senior": _SENIOR, "admin": _ADMIN, "viewer": _VIEWER,

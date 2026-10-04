@@ -4,6 +4,7 @@ request, so a revoked right or lowered clearance takes effect immediately."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sqlite3
@@ -16,7 +17,8 @@ from typing import Any, Dict, List, Optional
 
 import jwt
 import requests
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
@@ -26,6 +28,8 @@ from . import security, wallet
 from .anchoring import Hasher, anchor_pending
 from .chain import ChainError
 from .documents import DocError, DocumentService
+from .messaging import Messaging, MsgError
+from .realtime import Hub
 from .rag import InputBlocked, ask as rag_ask, ask_stream, prepare as rag_prepare
 from .redaction import render_event
 from .verify import verify_document
@@ -99,6 +103,27 @@ class DecisionBody(BaseModel):
     signature: str = Field(max_length=200)
 
 
+class PingBody(BaseModel):
+    to_department: str = Field(max_length=64)
+    title: str = Field(max_length=300)
+    body: str = Field(max_length=8000)
+    min_role: Optional[str] = Field(default=None, max_length=64)
+
+
+class PingMessageBody(BaseModel):
+    kind: str = Field(pattern="^(answer|comment)$")
+    body: str = Field(max_length=8000)
+    min_role: Optional[str] = Field(default=None, max_length=64)
+
+
+class ChatBody(BaseModel):
+    body: str = Field(max_length=8000)
+
+
+class DraftBody(BaseModel):
+    text: Optional[str] = Field(default=None, max_length=40000)
+
+
 class AskBody(BaseModel):
     question: str = Field(max_length=4000)
 
@@ -111,6 +136,7 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
     store = Store(settings.db_path, settings.cipher)
     hasher = Hasher(settings.ledger_keys)
     stop = threading.Event()
+    hub = Hub(lambda uid: (lambda row: Store.as_role_user(row) if row else None)(store.get_user(uid)))
     docs: Optional[DocumentService] = (
         DocumentService(store, vectors, settings.registry_path, settings.junior_new_requires_review,
                         settings.require_approval)
@@ -135,9 +161,18 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         yield
         stop.set()
 
+    messaging = Messaging(store, hub, llm=llm, docs=docs)
     app = FastAPI(title="Alexandria", docs_url="/docs", lifespan=lifespan)
     app.state.settings, app.state.store, app.state.chain, app.state.hasher = settings, store, chain, hasher
     app.state.vectors, app.state.llm, app.state.docs = vectors, llm, docs
+    app.state.hub, app.state.messaging = hub, messaging
+
+    @contextmanager
+    def msg_errors():
+        try:
+            yield
+        except MsgError as exc:
+            raise HTTPException(exc.status, exc.detail)
 
     @contextmanager
     def doc_errors():
@@ -362,6 +397,131 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         store.record_event("WALLET_RESET", actor.id, user_id, {"user": user_id}, department=tgt.department,
                            min_clearance=tgt.effective_clearance)
         return {"status": "reset"}
+
+    # ----------------------------------------------------------- chat & pings
+    @app.get("/channels")
+    def channels(auth: Auth = Depends(token_user("access"))) -> List[Dict[str, Any]]:
+        return messaging.channels_for(auth.actor)
+
+    @app.get("/channels/{channel_id}/messages")
+    def channel_messages(channel_id: str, limit: int = 50, before: Optional[int] = None,
+                         auth: Auth = Depends(token_user("access"))) -> List[Dict[str, Any]]:
+        with msg_errors():
+            return messaging.chat_history(auth.actor, channel_id, limit, before)
+
+    @app.post("/channels/{channel_id}/messages", status_code=201)
+    def post_channel_message(channel_id: str, body: ChatBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.post_chat(auth.actor, channel_id, body.body)
+
+    @app.post("/pings", status_code=201)
+    def create_ping(body: PingBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """Ask a department, not a person. Any qualified member can pick it up."""
+        with msg_errors():
+            return messaging.create_ping(auth.actor, body.to_department, body.title, body.body, body.min_role)
+
+    @app.get("/pings")
+    def list_pings(box: str = "inbox", include_closed: bool = False, limit: int = 50,
+                   auth: Auth = Depends(token_user("access"))) -> List[Dict[str, Any]]:
+        with msg_errors():
+            return messaging.list_pings(auth.actor, box, include_closed, limit)
+
+    @app.get("/pings/{ping_id}")
+    def get_ping(ping_id: int, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.get_ping(auth.actor, ping_id)
+
+    @app.post("/pings/{ping_id}/claim")
+    def claim_ping(ping_id: int, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.claim(auth.actor, ping_id)
+
+    @app.post("/pings/{ping_id}/release")
+    def release_ping(ping_id: int, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.release(auth.actor, ping_id)
+
+    @app.post("/pings/{ping_id}/messages", status_code=201)
+    def post_ping_message(ping_id: int, body: PingMessageBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.post_message(auth.actor, ping_id, body.kind, body.body, body.min_role)
+
+    @app.post("/pings/{ping_id}/resolve")
+    def resolve_ping(ping_id: int, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.resolve(auth.actor, ping_id)
+
+    @app.post("/pings/{ping_id}/close")
+    def close_ping(ping_id: int, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.close(auth.actor, ping_id)
+
+    @app.get("/pings/{ping_id}/draft-preview")
+    def ping_draft_preview(ping_id: int, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with msg_errors():
+            return messaging.draft_preview(auth.actor, ping_id)
+
+    @app.post("/pings/{ping_id}/draft", status_code=202)
+    def ping_draft(ping_id: int, body: DraftBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """Stage the (edited) draft for review: a different person must approve it."""
+        with msg_errors():
+            return messaging.stage_draft(auth.actor, auth.user["wallet_pubkey"], ping_id, body.text)
+
+    @app.websocket("/ws")
+    async def websocket_endpoint(ws: WebSocket) -> None:
+        """Live updates. The first message must be {"type":"auth","token":"<access token>"}
+        (a header cannot be set from a browser WebSocket, and a URL would end up in logs).
+        The server then pushes events built for *this* user's current rights; it closes the
+        socket when the session is revoked or its token expires."""
+        await ws.accept()
+        try:
+            first = await asyncio.wait_for(ws.receive_json(), timeout=5)
+            claims = security.decode_token(settings, first.get("token", ""), "access")
+        except Exception:
+            await ws.close(code=4401)
+            return
+        user = await run_in_threadpool(store.get_user, claims["sub"])
+        if not user or not await run_in_threadpool(store.session_active, claims["jti"], user["id"]):
+            await ws.close(code=4401)
+            return
+        conn = hub.register(user["id"], claims["jti"], float(claims["exp"]))
+        await ws.send_json({"type": "ready", "user": _public_user(user)})
+
+        async def drain_client() -> None:      # notices disconnects; clients do not send commands
+            try:
+                while True:
+                    await ws.receive_text()
+            except WebSocketDisconnect:
+                pass
+
+        async def push() -> None:
+            while True:
+                wait = min(30.0, conn.expires_at - time.time())
+                if wait <= 0:
+                    await ws.close(code=4401)
+                    return
+                try:
+                    msg = await asyncio.wait_for(conn.queue.get(), timeout=wait)
+                    # A logged-out or revoked session must not receive anything more, not even for 30s.
+                    if not await run_in_threadpool(store.session_active, conn.jti, conn.user_id):
+                        await ws.close(code=4401)
+                        return
+                    await ws.send_json(msg)
+                except asyncio.TimeoutError:
+                    if not await run_in_threadpool(store.session_active, conn.jti, conn.user_id):
+                        await ws.close(code=4401)      # logged out or revoked elsewhere
+                        return
+                    await ws.send_json({"type": "heartbeat"})
+
+        tasks = [asyncio.create_task(drain_client()), asyncio.create_task(push())]
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        except Exception:
+            pass
+        finally:
+            for t in tasks:
+                t.cancel()
+            hub.unregister(conn)
 
     # ------------------------------------------------------------ documents
     @app.post("/documents")

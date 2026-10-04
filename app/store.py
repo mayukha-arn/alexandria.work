@@ -206,6 +206,12 @@ class Store:
         with self.tx() as c:
             return _do(c)
 
+    def seal(self, body: str) -> str:
+        return self._seal(body)
+
+    def unseal(self, stored: str) -> str:
+        return self._unseal(stored)
+
     def _seal(self, body: str) -> str:
         return self._cipher.encrypt(body.encode()).decode() if self._cipher else body
 

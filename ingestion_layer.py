@@ -469,6 +469,30 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
     except Exception as exc:  # malformed / unreadable file
         return _result(422, "error", error=f"extraction failed: {exc}")
 
+    return _ingest_text(raw, extraction_meta, source_label or path_or_url, source_type, uploader_role,
+                        min_role, db_path, uploader_id, department, junior_new_requires_review,
+                        can_auto_approve, always_review)
+
+
+def process_incoming_text(text: str, label: str, user_role: str, min_role: str, db_path: str = DB_PATH,
+                          uploader_id: Optional[str] = None, department: Optional[str] = None,
+                          source_type: str = "thread",
+                          junior_new_requires_review: bool = False,
+                          can_auto_approve: Optional[Callable[[Dict[str, Any]], bool]] = None,
+                          always_review: bool = False) -> Dict[str, Any]:
+    """Run already-extracted text (e.g. a resolved Q&A thread) through the same pipeline as a
+    PDF or web page: dedup, delta staging, risk flags, review, chunking. Arguments mean what
+    they do in ``process_incoming_source``; ``label`` is recorded as the document's source."""
+    uploader_role = "senior" if user_role.lower().strip() == "senior" else "junior"
+    return _ingest_text(text, {"origin": "text"}, label, source_type, uploader_role, min_role, db_path,
+                        uploader_id, department, junior_new_requires_review, can_auto_approve, always_review)
+
+
+def _ingest_text(raw: str, extraction_meta: Dict[str, Any], source: str, source_type: str,
+                 uploader_role: str, min_role: str, db_path: str, uploader_id: Optional[str],
+                 department: Optional[str], junior_new_requires_review: bool,
+                 can_auto_approve: Optional[Callable[[Dict[str, Any]], bool]],
+                 always_review: bool) -> Dict[str, Any]:
     text = _normalize(raw)
     if not text:
         return _result(422, "error", error="no extractable text (image-only or empty source)",
@@ -477,7 +501,6 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
     # Part B
     doc_hash = sha256_text(text)
     timestamp = _now()
-    source = source_label or path_or_url
     base = {"doc_hash": doc_hash, "source": source, "extraction": extraction_meta}
 
     with _connect(db_path) as conn:
@@ -559,6 +582,8 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
     status = "version_update_ingested" if parent_hash else "new_document_ingested"
     return _result(201, status, deprecated_doc_hash=parent_hash, chunk_count=len(chunks),
                    chunks=chunks, **match_info, **base)
+
+
 
 
 # --------------------------------------------------------------------------- #
@@ -688,6 +713,18 @@ def get_document(doc_hash: str, db_path: str = DB_PATH) -> Optional[Dict[str, An
                            "status, parent_hash, chunk_count, indexed, timestamp FROM processed_docs "
                            "WHERE doc_hash = ?", (doc_hash,)).fetchone()
     return dict(row) if row else None
+
+
+def document_state(doc_hash: str, db_path: str = DB_PATH) -> str:
+    """Where a document stands: live | deprecated | pending | rejected | none."""
+    with _connect(db_path) as conn:
+        doc = conn.execute("SELECT status FROM processed_docs WHERE doc_hash = ?", (doc_hash,)).fetchone()
+        if doc:
+            return "live" if doc["status"] == "active" else "deprecated"
+        st = conn.execute("SELECT status FROM staged_updates WHERE doc_hash = ?", (doc_hash,)).fetchone()
+    if not st:
+        return "none"
+    return "pending" if st["status"] == "pending_approval" else st["status"]
 
 
 def mark_indexed(doc_hash: str, db_path: str = DB_PATH) -> None:

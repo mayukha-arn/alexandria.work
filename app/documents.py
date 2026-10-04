@@ -90,8 +90,7 @@ class DocumentService:
         return len(flagged)
 
     # ------------------------------------------------------------------ upload
-    def ingest(self, user: R.User, wallet_pubkey: Optional[str], source_type: str, path_or_url: str,
-               label: str, min_role: str, department: Optional[str]) -> Dict[str, Any]:
+    def _check_upload_rights(self, user: R.User, min_role: str, department: Optional[str]) -> str:
         if not R.can(user, R.Cap.UPLOAD_DOC):
             raise DocError(403, "not permitted")
         if min_role not in KNOWN_LABELS:
@@ -101,19 +100,17 @@ class DocumentService:
         department = department or user.department
         if department != user.department and user.role_def.level != "admin":
             raise DocError(403, "you can only upload for your own department")
+        return department
 
-        res = il.process_incoming_source(
-            source_type, path_or_url, R.ingestion_role(user), min_role, db_path=self.registry,
-            uploader_id=user.id, department=department,
-            junior_new_requires_review=self.junior_review, always_review=self.require_approval,
-            source_label=label,
-            # A senior may auto-approve an update only to documents they could approve and read.
-            can_auto_approve=lambda doc: R.can_approve(user, doc["department"]) and R.can_read(user, doc["min_role"]))
+    def _authority_hook(self, user: R.User):
+        # A senior may auto-approve an update only to documents they could approve and read.
+        return lambda doc: R.can_approve(user, doc["department"]) and R.can_read(user, doc["min_role"])
 
+    def _after_ingest(self, res: Dict[str, Any], user: R.User, wallet_pubkey: Optional[str],
+                      min_role: str, department: str) -> Dict[str, Any]:
         status = res["status"]
         if status in ("new_document_ingested", "version_update_ingested"):
-            flagged = self._activate(res, user, wallet_pubkey, None, mode="auto_senior")
-            res["quarantined_chunks"] = flagged
+            res["quarantined_chunks"] = self._activate(res, user, wallet_pubkey, None, mode="auto_senior")
         elif status == "pending_approval":
             self.store.record_event("DOCUMENT_STAGED", user.id, None,
                                     {"doc_hash": res["doc_hash"], "staged_id": res["staged_id"],
@@ -122,6 +119,27 @@ class DocumentService:
         elif res["status_code"] >= 400:
             raise DocError(res["status_code"], res.get("error", "ingestion failed"))
         return self._sanitize(res, user)
+
+    def ingest(self, user: R.User, wallet_pubkey: Optional[str], source_type: str, path_or_url: str,
+               label: str, min_role: str, department: Optional[str]) -> Dict[str, Any]:
+        department = self._check_upload_rights(user, min_role, department)
+        res = il.process_incoming_source(
+            source_type, path_or_url, R.ingestion_role(user), min_role, db_path=self.registry,
+            uploader_id=user.id, department=department,
+            junior_new_requires_review=self.junior_review, always_review=self.require_approval,
+            source_label=label, can_auto_approve=self._authority_hook(user))
+        return self._after_ingest(res, user, wallet_pubkey, min_role, department)
+
+    def ingest_text(self, user: R.User, wallet_pubkey: Optional[str], text: str, label: str,
+                    min_role: str, department: Optional[str], source_type: str = "thread") -> Dict[str, Any]:
+        """Same pipeline and the same checks as an upload, for text that is not a file."""
+        department = self._check_upload_rights(user, min_role, department)
+        res = il.process_incoming_text(
+            text, label, R.ingestion_role(user), min_role, db_path=self.registry, uploader_id=user.id,
+            department=department, source_type=source_type,
+            junior_new_requires_review=self.junior_review, always_review=self.require_approval,
+            can_auto_approve=self._authority_hook(user))
+        return self._after_ingest(res, user, wallet_pubkey, min_role, department)
 
     # ------------------------------------------------------------ review queue
     def _reviewable(self, user: R.User, item: Dict[str, Any]) -> bool:

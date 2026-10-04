@@ -33,7 +33,7 @@ class Settings:
     # Prompt size controls (CPU-only hosts read prompts slowly: fewer / shorter excerpts mean a faster first word).
     top_k: int = field(default_factory=lambda: int(os.getenv("ALEXANDRIA_TOP_K", "5")))
     context_chars: int = field(default_factory=lambda: int(os.getenv("ALEXANDRIA_CONTEXT_CHARS", "0")))   # 0 = no cap
-    min_password_length: int = 12
+    min_password_length: int = field(default_factory=lambda: int(os.getenv("ALEXANDRIA_MIN_PASSWORD", "12")))
     # Four-eyes: every document, whoever uploads it, needs one approval from a different person
     # before it goes live. ALEXANDRIA_REQUIRE_APPROVAL=0 restores the PRD's senior auto-approve.
     require_approval: bool = field(default_factory=lambda: os.getenv("ALEXANDRIA_REQUIRE_APPROVAL", "1") != "0")

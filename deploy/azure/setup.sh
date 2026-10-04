@@ -4,6 +4,7 @@
 set -euo pipefail
 : "${API_HOST:?}" "${CORS_ORIGINS:?}" "${KEYVAULT_URL:?}"
 MODEL="${MODEL:-llama3.2:3b}"; TOP_K="${TOP_K:-3}"; CTX="${CTX:-2400}"; CHAIN="${CHAIN:-solana}"
+MIN_PW="${MIN_PW:-8}"     # this deployment's owners chose an 8-character minimum (the app default is 12)
 REPO="${REPO:-https://github.com/mayukha-arn/alexandria.work}"
 
 id alexapi >/dev/null 2>&1 || useradd --system --home /var/lib/alexandria --shell /usr/sbin/nologin alexapi
@@ -33,6 +34,7 @@ ALEXANDRIA_CHAIN=$CHAIN
 SOLANA_RPC_URLS=https://api.devnet.solana.com
 ALEXANDRIA_MODEL=$MODEL
 ALEXANDRIA_LLM_PROVIDER=auto
+ALEXANDRIA_MIN_PASSWORD=$MIN_PW
 ALEXANDRIA_TOP_K=$TOP_K
 ALEXANDRIA_CONTEXT_CHARS=$CTX
 OLLAMA_URL=http://127.0.0.1:11434

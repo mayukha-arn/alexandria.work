@@ -1,5 +1,5 @@
 // Display helpers for people: usernames like "maya.chen" become "Maya Chen", with a stable avatar colour.
-const PALETTE = ["#6246EA", "#E11D74", "#0EA5E9", "#16A34A", "#F59E0B", "#7C3AED", "#DB2777", "#0891B2", "#EA580C", "#4F46E5"];
+const PALETTE = ["#059669", "#0D9488", "#0284C7", "#16A34A", "#CA8A04", "#EA580C", "#DC2626", "#0891B2", "#65A30D", "#475569"];
 
 export function displayName(username: string | null | undefined): string {
   if (!username) return "Someone";

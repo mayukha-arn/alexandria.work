@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from zoneinfo import ZoneInfo
 import os
 import sqlite3
 import tempfile
@@ -33,6 +34,7 @@ from .messaging import Messaging, MsgError
 from .realtime import Hub
 from .rag import InputBlocked, ask as rag_ask, ask_stream, prepare as rag_prepare
 from .llm import LLMUnavailable
+from .routing import Router
 from .redaction import render_event
 from .telemetry import SECURITY_EVENTS, Telemetry
 from .verify import verify_document
@@ -87,12 +89,20 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
         "label": u.role_def.label, "department": u.department, "level": u.role_def.level,
         "persona": u.role_def.persona, "clearance": u.effective_clearance,
         "manager_id": row["manager_id"], "wallet_pubkey": row["wallet_pubkey"],
-        "totp_enrolled": bool(row["totp_enrolled"]),
+        "totp_enrolled": bool(row["totp_enrolled"]), "timezone": row.get("timezone"),
         "capabilities": sorted(c.value for c in u.capabilities),
     }
 
 
 log = logging.getLogger("alexandria.api")
+
+
+class RouteBody(BaseModel):
+    question: str = Field(min_length=3, max_length=2000)
+
+
+class TimezoneBody(BaseModel):
+    timezone: str = Field(max_length=64)
 
 
 class ChallengeBody(BaseModel):
@@ -107,7 +117,8 @@ class DecisionBody(BaseModel):
 
 
 class PingBody(BaseModel):
-    to_department: str = Field(max_length=64)
+    to_department: Optional[str] = Field(default=None, max_length=64)
+    to_user: Optional[str] = Field(default=None, max_length=64)       # a specific expert (their department is implied)
     title: str = Field(max_length=300)
     body: str = Field(max_length=8000)
     min_role: Optional[str] = Field(default=None, max_length=64)
@@ -168,7 +179,8 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         stop.set()
         telemetry.close()
 
-    messaging = Messaging(store, hub, llm=llm, docs=docs)
+    messaging = Messaging(store, hub, llm=llm, docs=docs, auto_learn=settings.auto_learn)
+    router = Router(store, vectors, settings.registry_path, online=hub.online_ids)
     # The interactive API docs list every endpoint: handy locally, not something to publish.
     app = FastAPI(title="Alexandria", lifespan=lifespan, openapi_url="/openapi.json" if settings.expose_docs else None,
                   docs_url="/docs" if settings.expose_docs else None, redoc_url=None)
@@ -344,6 +356,42 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
     def me(auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
         return _public_user(auth.user)
 
+    @app.put("/auth/me/timezone")
+    def set_timezone(body: TimezoneBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """The browser reports its time zone so colleagues can see when you're working."""
+        try:
+            ZoneInfo(body.timezone)
+        except Exception:
+            raise HTTPException(422, "unknown time zone")
+        store.update_user(auth.user["id"], timezone=body.timezone)
+        return {"timezone": body.timezone}
+
+    @app.get("/directory")
+    def directory(_: Auth = Depends(token_user("access"))) -> List[Dict[str, Any]]:
+        """Everyone's name, department, role, local time and whether they're working now."""
+        return router.directory()
+
+    @app.post("/route")
+    def route(body: RouteBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """Who should answer this question: departments and specific experts, available ones first."""
+        if not R.can(auth.actor, R.Cap.PING_DEPARTMENT):
+            raise HTTPException(403, "not permitted")
+        return router.suggest(auth.actor, body.question)
+
+    @app.get("/insights")
+    def insights(auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """How much the company's knowledge has grown, and how fast questions get answered."""
+        docs_live = [d for d in (docs.list_documents(auth.actor) if docs else []) if d.get("status") == "active"]
+        with store.tx() as c:
+            resolved = c.execute("SELECT COUNT(*) FROM pings WHERE status = 'resolved'").fetchone()[0]
+            waiting = c.execute("SELECT COUNT(*) FROM pings WHERE status IN ('open','claimed')").fetchone()[0]
+            waits = sorted(r[0] for r in c.execute(
+                "SELECT MIN(m.created_at) - p.created_at FROM pings p JOIN ping_messages m ON m.ping_id = p.id "
+                "WHERE m.kind = 'answer' GROUP BY p.id ORDER BY p.id DESC LIMIT 500") if r[0] is not None)
+        return {"documents": len(docs_live), "learned": sum(1 for d in docs_live if d["source"].startswith("thread:")),
+                "resolved": resolved, "waiting": waiting,
+                "median_first_answer_min": round(waits[len(waits) // 2] / 60) if waits else None}
+
     @app.post("/auth/logout")
     def logout(auth: Auth = Depends(token_user("access"))) -> Dict[str, str]:
         store.revoke_session(auth.claims["jti"], auth.user["id"])
@@ -475,7 +523,9 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
     def create_ping(body: PingBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
         """Ask a department, not a person. Any qualified member can pick it up."""
         with msg_errors():
-            return messaging.create_ping(auth.actor, body.to_department, body.title, body.body, body.min_role)
+            if not body.to_department and not body.to_user:
+                raise MsgError(422, "choose a department or a person")
+            return messaging.create_ping(auth.actor, body.to_department, body.title, body.body, body.min_role, body.to_user)
 
     @app.get("/pings")
     def list_pings(box: str = "inbox", include_closed: bool = False, limit: int = 50,

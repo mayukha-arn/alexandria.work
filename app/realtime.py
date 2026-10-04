@@ -44,6 +44,11 @@ class Hub:
             if conn in self._conns:
                 self._conns.remove(conn)
 
+    def online_ids(self) -> set:
+        """Users with at least one live connection right now."""
+        with self._lock:
+            return {c.user_id for c in self._conns}
+
     def count(self) -> int:
         with self._lock:
             return len(self._conns)

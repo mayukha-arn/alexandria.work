@@ -314,7 +314,7 @@ function UploadDialog({ onClose, onDone }: { onClose: () => void; onDone: (name:
     catch (err) { setError(err instanceof ApiError ? err.detail : "Upload failed."); } finally { setBusy(false); }
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#100c26]/40 p-4 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#06291f]/40 p-4 backdrop-blur-sm" onClick={onClose}>
       <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="animate-in w-full max-w-md space-y-4 rounded-2xl border border-line bg-white p-5 shadow-2xl" aria-label="Share a document">
         <div className="flex items-center justify-between"><h2 className="text-lg font-semibold">Share a document</h2><button type="button" onClick={onClose} aria-label="Close" className="rounded-md p-1 text-mute hover:bg-panel2"><X size={18} /></button></div>
         <p className="text-sm text-mute">It joins the knowledge base once a colleague approves it, and Alexandria can then use it to answer questions.</p>

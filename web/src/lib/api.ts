@@ -60,7 +60,7 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
 }
 
 // ---------------------------------------------------------------------------- types
-export type Me = {
+export type Me = { timezone?: string | null;
   id: string; username: string; role: string; label: string; department: string; level: string;
   persona: string; clearance: number; manager_id: string | null; wallet_pubkey: string | null;
   totp_enrolled: boolean; capabilities: string[];
@@ -76,10 +76,14 @@ export type PingMessage = { id: number; kind: "question" | "answer" | "comment";
 export type Ping = {
   id: number; title: string; to_department: string; status: "open" | "claimed" | "answered" | "resolved" | "closed";
   asker: string | null; asker_id: string; claimed_by: string | null; min_role: string; created_at: number; updated_at: number;
-  resolved_at: number | null; draft: { doc_hash: string; staged_id: number | null; state: string } | null;
+  resolved_at: number | null; requested?: string | null; requested_id?: string | null; draft: { doc_hash: string; staged_id: number | null; state: string } | null;
   can: { claim: boolean; release: boolean; answer: boolean; comment: boolean; resolve: boolean; close: boolean; draft: boolean };
   messages?: PingMessage[];
 };
+export type Person = { id: string; username: string; department: string; role: string; online: boolean; timezone: string | null; local_time: string | null; working: boolean | null };
+export type Expert = Person & { score: number; reasons: string[] };
+export type Route = { departments: { department: string; confidence: number; members: number; working_now: number }[]; experts: Expert[] };
+export type Insights = { documents: number; learned: number; resolved: number; waiting: number; median_first_answer_min: number | null };
 export type Source = { n: number; chunk_id: string; doc_hash: string; source: string; department: string | null; verification: string | null };
 export type AskDone = { answer: string; sources: Source[]; grounded: boolean; warnings: string[]; persona: string; metrics: { ttft_ms?: number | null; total_ms?: number; retrieved?: number } };
 export type Doc = { doc_hash: string; source: string; source_type: string; min_role: string; department: string | null; status: string; chunk_count: number; indexed: number; timestamp: string };

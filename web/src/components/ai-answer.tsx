@@ -1,7 +1,7 @@
 "use client";
 import { docTitle } from "@/lib/format";
 import { useEffect, useRef, useState } from "react";
-import { BadgeCheck, FileText, ShieldAlert, ShieldCheck } from "lucide-react";
+import { BadgeCheck, FileText, GraduationCap, ShieldAlert, ShieldCheck } from "lucide-react";
 import { ApiError, type AskDone, type Source } from "@/lib/api";
 import { streamPost } from "@/lib/sse";
 import { Markdown } from "@/lib/markdown";
@@ -15,7 +15,7 @@ const VERIFY: Record<string, { text: string; cls: string }> = {
 };
 
 /** Streams Alexandria's answer to ``question`` (once, on mount) and renders it as a message. */
-export function AiAnswer({ question, compact = false }: { question: string; compact?: boolean }) {
+export function AiAnswer({ question, compact = false, onDone }: { question: string; compact?: boolean; onDone?: (r: AskDone | null) => void }) {
   const [text, setText] = useState("");
   const [done, setDone] = useState<AskDone | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -30,9 +30,9 @@ export function AiAnswer({ question, compact = false }: { question: string; comp
     streamPost("/ask/stream", { question }, (ev) => {
       if (ev.event === "meta") setWarnings(ev.data.warnings ?? []);
       else if (ev.event === "token") { acc += ev.data.text; setText(acc); }
-      else if (ev.event === "done") { setDone(ev.data); setText(ev.data.answer); setWarnings(ev.data.warnings ?? []); }
-      else if (ev.event === "error") setError(ev.data.detail);
-    }).catch((e) => setError(e instanceof ApiError ? e.detail : "Alexandria couldn't answer right now."));
+      else if (ev.event === "done") { setDone(ev.data); setText(ev.data.answer); setWarnings(ev.data.warnings ?? []); onDone?.(ev.data); }
+      else if (ev.event === "error") { setError(ev.data.detail); onDone?.(null); }
+    }).catch((e) => { setError(e instanceof ApiError ? e.detail : "Alexandria couldn't answer right now."); onDone?.(null); });
   }, [question]);
 
   const streaming = !done && !error;
@@ -70,11 +70,12 @@ export function AiAnswer({ question, compact = false }: { question: string; comp
 
 function SourceChip({ s, active }: { s: Source; active: boolean }) {
   const v = s.verification ? VERIFY[s.verification] : null;
+  const learned = s.source.startsWith("thread:");
   return (
     <li className={`flex items-center gap-2 rounded-lg border bg-white px-2.5 py-1.5 text-xs transition ${active ? "border-brand ring-2 ring-brand/15" : "border-line"}`}>
       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-brand/10 text-[10px] font-bold text-brand">{s.n}</span>
-      <FileText size={13} className="shrink-0 text-mute" />
-      <span className="min-w-0 flex-1 truncate font-medium" title={s.source}>{docTitle(s.source)}</span>
+      {learned ? <GraduationCap size={13} className="shrink-0 text-brand" /> : <FileText size={13} className="shrink-0 text-mute" />}
+      <span className="min-w-0 flex-1 truncate" title={s.source}><span className="font-medium">{docTitle(s.source)}</span>{learned && <span className="block text-[10px] text-brand">Learned from a resolved request</span>}</span>
       {v && <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold ${v.cls}`}>{s.verification === "verified" && <ShieldCheck size={11} />}{v.text}</span>}
     </li>
   );

@@ -84,6 +84,9 @@ class Store:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
             if "anchor_kid" not in cols:          # which ledger key produced the on-chain hashes
                 conn.execute("ALTER TABLE events ADD COLUMN anchor_kid TEXT")
+            if "timezone" not in {r[1] for r in conn.execute("PRAGMA table_info(users)")}:   # IANA name, for routing
+                conn.execute("ALTER TABLE users ADD COLUMN timezone TEXT")
+            conn.commit()
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -124,7 +127,7 @@ class Store:
 
     def update_user(self, user_id: str, **fields: Any) -> None:
         allowed = {"password_hash", "role", "clearance", "manager_id", "granted", "revoked",
-                   "totp_secret_enc", "totp_enrolled", "totp_last_step", "wallet_pubkey",
+                   "totp_secret_enc", "totp_enrolled", "totp_last_step", "wallet_pubkey", "timezone",
                    "failed_attempts", "locked_until"}
         assert set(fields) <= allowed, set(fields) - allowed
         for k in ("granted", "revoked"):

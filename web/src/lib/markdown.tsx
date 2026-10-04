@@ -33,7 +33,7 @@ export function Markdown({ text, onCite }: { text: string; onCite?: (n: number) 
       i++;
       while (i < lines.length && !lines[i].startsWith("```")) code.push(lines[i++]);
       i++;
-      blocks.push(<pre key={k++} className="my-2 overflow-x-auto rounded-lg bg-[#16122e] p-3 font-mono text-xs leading-relaxed text-[#e9e6ff]">{code.join("\n")}</pre>);
+      blocks.push(<pre key={k++} className="my-2 overflow-x-auto rounded-lg bg-[#0b2a20] p-3 font-mono text-xs leading-relaxed text-[#d7f5e9]">{code.join("\n")}</pre>);
       continue;
     }
     if (/^\s*([-*]|\d+\.)\s+/.test(line)) {

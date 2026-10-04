@@ -52,7 +52,7 @@ function UserCard({ u, isMe, guard }: { u: ManagedUser; isMe: boolean; guard: (f
           <div>
             <label className="label" htmlFor={`cl-${u.id}`}>Clearance: {level}{level !== u.clearance && <span className="ml-2 normal-case text-warn">(unsaved)</span>}</label>
             <div className="flex items-center gap-3">
-              <input id={`cl-${u.id}`} className="w-full max-w-md accent-indigo-500" type="range" min={0} max={max} step={10} value={Math.min(level, max)} onChange={(e) => setLevel(Number(e.target.value))} />
+              <input id={`cl-${u.id}`} className="w-full max-w-md accent-emerald-600" type="range" min={0} max={max} step={10} value={Math.min(level, max)} onChange={(e) => setLevel(Number(e.target.value))} />
               <button className="btn" disabled={level === u.clearance} onClick={() => guard(() => api(`/users/${u.id}/clearance`, { method: "PUT", body: { level } }), `Set ${u.username}'s clearance to ${level}.`)}>Save</button>
             </div>
             <p className="mt-1 text-xs text-mute">Anything classified above this level is hidden from them: documents, answers, ledger details.</p>

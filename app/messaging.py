@@ -14,6 +14,7 @@ cleared version. Message bodies are encrypted at rest; audit events carry ids, n
 from __future__ import annotations
 
 import collections
+import logging
 import re
 import threading
 import time
@@ -24,6 +25,8 @@ from . import guardrails
 from .documents import KNOWN_LABELS
 from .redaction import redaction_marker
 from .store import Store
+
+log = logging.getLogger("alexandria.messaging")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS channels (
@@ -131,12 +134,15 @@ def default_label(user: R.User) -> str:
 class Messaging:
     def __init__(self, store: Store, hub: Any = None, claim_ttl: float = 30 * 60,
                  open_ping_limit: int = 20, limiter: Optional[RateLimiter] = None,
-                 llm: Any = None, docs: Any = None) -> None:
+                 llm: Any = None, docs: Any = None, auto_learn: bool = False) -> None:
         self.store, self.hub, self.claim_ttl, self.open_ping_limit = store, hub, claim_ttl, open_ping_limit
         self.llm, self.docs = llm, docs      # llm writes draft articles; docs stages them for review
+        self.auto_learn = auto_learn          # resolving a request drafts a knowledge article from it automatically
         self.limiter = limiter or RateLimiter(20, 10.0)
         with store.tx() as c:
             c.executescript(SCHEMA)
+            if "requested_id" not in {r[1] for r in c.execute("PRAGMA table_info(pings)")}:   # a specific expert asked for
+                c.execute("ALTER TABLE pings ADD COLUMN requested_id TEXT")
             c.execute("INSERT OR IGNORE INTO channels (id, name, kind, department) VALUES ('company', 'company', 'company', NULL)")
             for dept in R.DEPARTMENTS:
                 c.execute("INSERT OR IGNORE INTO channels (id, name, kind, department) VALUES (?, ?, 'department', ?)",
@@ -281,6 +287,7 @@ class Messaging:
         out = {"id": ping["id"], "title": self.store.unseal(ping["title"]), "to_department": ping["to_department"],
                "status": ping["status"], "asker": self._name(ping["asker_id"]), "asker_id": ping["asker_id"],
                "claimed_by": self._name(ping["claimed_by"]), "min_role": ping["min_role"],
+               "requested": self._name(ping.get("requested_id")), "requested_id": ping.get("requested_id"),
                "created_at": ping["created_at"], "updated_at": ping["updated_at"], "resolved_at": ping["resolved_at"],
                "draft": self._draft_view(ping), "can": self._can(viewer, ping)}
         if rows is not None:
@@ -301,14 +308,25 @@ class Messaging:
         self._publish(build)
 
     # ---- create / read
-    def create_ping(self, user: R.User, to_department: str, title: str, body: str,
-                    min_role: Optional[str] = None) -> Dict[str, Any]:
+    def create_ping(self, user: R.User, to_department: Optional[str], title: str, body: str,
+                    min_role: Optional[str] = None, to_user: Optional[str] = None) -> Dict[str, Any]:
+        """Ask a department. With ``to_user``, ask a specific expert in it: they are notified first, and anyone
+        else qualified in the department can still pick it up (so a question never waits on one time zone)."""
         if not R.can(user, R.Cap.PING_DEPARTMENT):
             raise MsgError(403, "not permitted")
-        if to_department not in R.DEPARTMENTS:
-            raise MsgError(422, f"unknown department {to_department!r}")
         title, body = self._text(title, "title", MAX_TITLE), self._text(body, "message", MAX_BODY)
         label = self._label(user, min_role)
+        requested = None
+        if to_user:
+            row = self.store.get_user_by_name(to_user)
+            target = Store.as_role_user(row) if row else None
+            probe = {"to_department": target.department if target else None, "min_clearance": R.min_clearance_for(label),
+                     "asker_id": user.id}
+            if target is None or not qualified_answerer(target, probe):
+                raise MsgError(422, "that person can't answer this request")       # same answer for unknown names
+            to_department, requested = target.department, target.id
+        if to_department not in R.DEPARTMENTS:
+            raise MsgError(422, f"unknown department {to_department!r}")
         self.limiter.check(f"ping:{user.id}")
         with self.store.tx() as c:
             open_n = c.execute("SELECT COUNT(*) FROM pings WHERE asker_id = ? AND status IN ('open','claimed','answered')",
@@ -316,14 +334,15 @@ class Messaging:
             if open_n >= self.open_ping_limit:
                 raise MsgError(429, f"you already have {open_n} open pings; resolve some first")
             now = time.time()
-            pid = c.execute("INSERT INTO pings (asker_id, to_department, title, min_role, min_clearance, created_at, updated_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                            (user.id, to_department, self.store.seal(title), label, R.min_clearance_for(label), now, now)).lastrowid
+            pid = c.execute("INSERT INTO pings (asker_id, to_department, title, min_role, min_clearance, created_at, updated_at, "
+                            "requested_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (user.id, to_department, self.store.seal(title), label, R.min_clearance_for(label), now, now,
+                             requested)).lastrowid
             c.execute("INSERT INTO ping_messages (ping_id, author_id, kind, body, min_role, min_clearance, created_at) "
                       "VALUES (?, ?, 'question', ?, ?, ?, ?)",
                       (pid, user.id, self.store.seal(body), label, R.min_clearance_for(label), now))
         ping = self._ping(pid)
-        self._event("PING_CREATED", user, ping, {"to_department": to_department})
+        self._event("PING_CREATED", user, ping, {"to_department": to_department, "requested_id": requested})
         self._broadcast_ping("ping.created", pid)
         return self._ping_view(ping, user, self._rows(pid))
 
@@ -341,7 +360,9 @@ class Messaging:
         if not include_closed:
             sql += " AND status IN ('open','claimed','answered')"
         with self.store.tx() as c:
-            rows = [self._lazy_release(dict(r)) for r in c.execute(sql + " ORDER BY updated_at DESC LIMIT ?", (*args, limit))]
+            order = " ORDER BY (requested_id = ?) DESC, updated_at DESC LIMIT ?" if box == "inbox" else " ORDER BY updated_at DESC LIMIT ?"
+            params = (*args, user.id, limit) if box == "inbox" else (*args, limit)
+            rows = [self._lazy_release(dict(r)) for r in c.execute(sql + order, params)]
         return [self._ping_view(r, user) for r in rows]
 
     def get_ping(self, user: R.User, ping_id: int) -> Dict[str, Any]:
@@ -428,7 +449,29 @@ class Messaging:
         ping = self._ping(ping_id)
         self._event("PING_RESOLVED", user, ping, {})
         self._broadcast_ping("ping.updated", ping_id)
+        if self.auto_learn:
+            threading.Thread(target=self._learn, args=(ping_id,), daemon=True).start()
         return self._ping_view(ping, user)
+
+    def _learn(self, ping_id: int) -> None:
+        """A resolved request becomes a knowledge article: drafted from the thread for the person who answered
+        it, then reviewed by someone else like any document. Approved, it is indexed and Alexandria can use it."""
+        try:
+            ping = self._ping(ping_id)
+            if ping["draft_doc_hash"] or self.docs is None:
+                return
+            with self.store.tx() as c:
+                authors = [r["author_id"] for r in c.execute(
+                    "SELECT author_id FROM ping_messages WHERE ping_id = ? AND kind = 'answer' ORDER BY id", (ping_id,))]
+            for uid in dict.fromkeys(authors):
+                drafter = self._user(uid)
+                if drafter and R.can(drafter, R.Cap.UPLOAD_DOC):
+                    row = self.store.get_user(uid)
+                    self.stage_draft(drafter, row.get("wallet_pubkey") if row else None, ping_id)
+                    self._broadcast_ping("ping.updated", ping_id)
+                    return
+        except Exception:
+            log.exception("could not draft knowledge from request %s", ping_id)
 
     def close(self, user: R.User, ping_id: int) -> Dict[str, Any]:
         ping = self._visible(user, ping_id)

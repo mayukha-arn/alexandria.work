@@ -20,7 +20,7 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { if (status === "authed") router.replace("/chat/"); }, [status, router]);
+  useEffect(() => { if (status === "authed") router.replace("/ask/"); }, [status, router]);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true); setError(null);
@@ -48,7 +48,7 @@ export default function Login() {
     const path = step.kind === "mfa" ? "/auth/2fa/verify" : "/auth/2fa/enable";
     const r = await api<{ access_token: string }>(path, { body: { code }, token: step.token, quiet401: true });
     await signIn(r.access_token);
-    router.replace("/chat/");
+    router.replace("/ask/");
   }); };
 
   return (

@@ -25,6 +25,7 @@ from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
 from solders.message import Message
 from solders.pubkey import Pubkey
+from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction
 
 from .config import ROOT
@@ -188,6 +189,32 @@ class SolanaChain:
         ix = Instruction(self.program, _disc("initialize"), self._metas((self.ledger_pda, True)))
         self._send(ix)
 
+    # -- key rotation
+    def rotate_authority(self, new_authority: Keypair, sweep: bool = True) -> str:
+        """Hand the ledger to ``new_authority``, in one atomic transaction signed by both keys.
+
+        With ``sweep`` the old key's remaining SOL moves to the new key in the same transaction,
+        so the new key can pay for future entries and nothing is stranded on the retired key.
+        On success this client switches to the new key. Returns the transaction signature.
+        """
+        with self._lock:
+            ixs: List[Instruction] = []
+            if sweep:
+                bal = self.rpc.call("getBalance", [str(self.authority.pubkey()), {"commitment": "confirmed"}])["value"]
+                fee = 10_000                                   # two signatures + headroom
+                if bal > fee:
+                    ixs.append(transfer(TransferParams(from_pubkey=self.authority.pubkey(),
+                                                       to_pubkey=new_authority.pubkey(), lamports=bal - fee)))
+            metas = [AccountMeta(self.authority.pubkey(), is_signer=True, is_writable=False),
+                     AccountMeta(new_authority.pubkey(), is_signer=True, is_writable=False),
+                     AccountMeta(self.ledger_pda, is_signer=False, is_writable=True)]
+            ixs.append(Instruction(self.program, _disc("set_authority"), metas))
+            bh = self.rpc.call("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"]
+            tx = Transaction([self.authority, new_authority], Message(ixs, self.authority.pubkey()), Hash.from_string(bh))
+            sig = self.rpc.send_and_confirm(tx)
+            self.authority = new_authority
+            return sig
+
     # -- writes
     def log_event(self, actor_hash: bytes, action_hash: bytes, payload_hash: bytes, dept: Optional[str],
                   required_clearance: int, approver: Optional[str] = None) -> AnchorResult:
@@ -223,10 +250,20 @@ class MemoryChain:
     """In-process stand-in with the same interface and the same rules (write-once
     documents, clearance range). For unit tests; never used when a real chain is configured."""
 
-    def __init__(self) -> None:
+    def __init__(self, authority: Optional[Keypair] = None) -> None:
         self.entries: List[Dict[str, Any]] = []
         self.docs: Dict[bytes, Dict[str, Any]] = {}
         self.fail_next = 0  # simulate an outage
+        self.authority = authority
+
+    def ledger(self) -> Optional[Dict[str, Any]]:
+        return {"authority": str(self.authority.pubkey()) if self.authority else None,
+                "next_index": len(self.entries)}
+
+    def rotate_authority(self, new_authority: Keypair, sweep: bool = True) -> str:
+        self._maybe_fail()
+        self.authority = new_authority
+        return "mem-rotate"
 
     def _maybe_fail(self) -> None:
         if self.fail_next:

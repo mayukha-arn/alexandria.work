@@ -20,6 +20,11 @@ pub mod alexandria_audit {
         crate::instructions::initialize::handle_initialize(ctx)
     }
 
+    /// Rotate the write key. Needs signatures from both the current and the new authority.
+    pub fn set_authority(ctx: Context<SetAuthority>) -> Result<()> {
+        crate::instructions::set_authority::handle_set_authority(ctx)
+    }
+
     /// Append an audit entry (authority only).
     pub fn log_audit_event(
         ctx: Context<LogAuditEvent>,

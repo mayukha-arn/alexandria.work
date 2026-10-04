@@ -18,13 +18,21 @@ def redaction_marker(level: int) -> str:
     return f"[REDACTED - Level {level} Required]"
 
 
+def _actor_hash(event: Dict[str, Any], hasher: Hasher):
+    """The hash as it appears on-chain: made with the key recorded at anchoring time."""
+    try:
+        return hasher.mac(event["actor_id"] or "system", event.get("anchor_kid")).hex()
+    except KeyError:
+        return None          # that ledger key was retired; the on-chain hash can no longer be recomputed
+
+
 def render_event(event: Dict[str, Any], viewer_clearance: int, hasher: Hasher) -> Dict[str, Any]:
     need = event["min_clearance"]
     row: Dict[str, Any] = {
         "id": event["id"],
         "created_at": event["created_at"],
         "department": event["department"],
-        "actor_hash": hasher.mac(event["actor_id"] or "system").hex(),
+        "actor_hash": _actor_hash(event, hasher),
         "required_clearance": need,
         "anchored": event["anchored_at"] is not None,
         "tx_signature": event["tx_signature"],

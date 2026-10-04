@@ -10,8 +10,6 @@ import uuid
 from contextlib import closing, contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
-from cryptography.fernet import Fernet
-
 import roles as R
 
 SCHEMA = """
@@ -62,7 +60,8 @@ CREATE TABLE IF NOT EXISTS events (
     created_at    REAL NOT NULL,
     tx_signature  TEXT,
     anchored_at   REAL,
-    anchor_error  TEXT
+    anchor_error  TEXT,
+    anchor_kid    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_unanchored ON events(anchored_at) WHERE anchored_at IS NULL;
 """
@@ -75,12 +74,15 @@ def _row_user(row: sqlite3.Row) -> Dict[str, Any]:
 
 
 class Store:
-    def __init__(self, db_path: str, fernet_key: Optional[str] = None) -> None:
+    def __init__(self, db_path: str, cipher: Any = None) -> None:
         self.db_path = db_path
         # Event payloads hold the plaintext behind on-chain hashes: encrypt them at rest.
-        self._fernet = Fernet(fernet_key.encode()) if fernet_key else None
+        self._cipher = cipher
         with closing(sqlite3.connect(db_path)) as conn:
             conn.executescript(SCHEMA)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
+            if "anchor_kid" not in cols:          # which ledger key produced the on-chain hashes
+                conn.execute("ALTER TABLE events ADD COLUMN anchor_kid TEXT")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -205,10 +207,10 @@ class Store:
             return _do(c)
 
     def _seal(self, body: str) -> str:
-        return self._fernet.encrypt(body.encode()).decode() if self._fernet else body
+        return self._cipher.encrypt(body.encode()).decode() if self._cipher else body
 
     def _unseal(self, stored: str) -> str:
-        return self._fernet.decrypt(stored.encode()).decode() if self._fernet else stored
+        return self._cipher.decrypt(stored.encode()).decode() if self._cipher else stored
 
     def _event(self, row: sqlite3.Row) -> Dict[str, Any]:
         d = dict(row)
@@ -227,10 +229,43 @@ class Store:
                              "ORDER BY id LIMIT ?", (limit,)).fetchall()
         return [self._event(r) for r in rows]
 
-    def mark_anchored(self, event_id: int, signature: Optional[str]) -> None:
+    def mark_anchored(self, event_id: int, signature: Optional[str], kid: Optional[str] = None) -> None:
         with self.tx() as c:
-            c.execute("UPDATE events SET tx_signature = ?, anchored_at = ? WHERE id = ?",
-                      (signature, time.time(), event_id))
+            c.execute("UPDATE events SET tx_signature = ?, anchored_at = ?, anchor_kid = ? WHERE id = ?",
+                      (signature, time.time(), kid, event_id))
+
+    # ---- key rotation ------------------------------------------------------------
+    def _encrypted_columns(self):
+        return (("users", "id", "totp_secret_enc"), ("events", "id", "payload"))
+
+    def reencrypt_all(self) -> Dict[str, int]:
+        """Re-encrypt every stored ciphertext under the newest key. Safe to run repeatedly."""
+        if not self._cipher:
+            return {}
+        done: Dict[str, int] = {}
+        with self.tx() as c:
+            for table, pk, col in self._encrypted_columns():
+                n = 0
+                for row in c.execute(f"SELECT {pk}, {col} FROM {table} WHERE {col} IS NOT NULL").fetchall():
+                    if self._cipher.decryptable_with_current_only(row[1].encode()):
+                        continue          # already under the newest key (rotate() would only re-randomise it)
+                    c.execute(f"UPDATE {table} SET {col} = ? WHERE {pk} = ?",
+                              (self._cipher.rotate(row[1].encode()).decode(), row[0]))
+                    n += 1
+                done[f"{table}.{col}"] = n
+        return done
+
+    def count_not_under_current_key(self) -> int:
+        """Ciphertexts that the newest key alone cannot read (so an old key must not be retired yet)."""
+        if not self._cipher:
+            return 0
+        bad = 0
+        with self.tx() as c:
+            for table, pk, col in self._encrypted_columns():
+                for (token,) in c.execute(f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL").fetchall():
+                    if not self._cipher.decryptable_with_current_only(token.encode()):
+                        bad += 1
+        return bad
 
     def mark_anchor_error(self, event_id: int, error: str) -> None:
         with self.tx() as c:

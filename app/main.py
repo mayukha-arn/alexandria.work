@@ -108,8 +108,8 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
     """``chain`` is a SolanaChain (or MemoryChain in tests). With one, a background loop
     anchors the audit outbox; without one, events simply queue until a chain is configured."""
     settings = settings or Settings()
-    store = Store(settings.db_path, settings.fernet_key)
-    hasher = Hasher(settings.ledger_key)
+    store = Store(settings.db_path, settings.cipher)
+    hasher = Hasher(settings.ledger_keys)
     stop = threading.Event()
     docs: Optional[DocumentService] = (
         DocumentService(store, vectors, settings.registry_path, settings.junior_new_requires_review,

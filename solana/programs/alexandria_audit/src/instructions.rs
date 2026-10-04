@@ -1,10 +1,12 @@
 pub mod anchor_document;
 pub mod initialize;
 pub mod log_audit_event;
+pub mod set_authority;
 
 pub use anchor_document::*;
 pub use initialize::*;
 pub use log_audit_event::*;
+pub use set_authority::*;
 
 use anchor_lang::prelude::*;
 

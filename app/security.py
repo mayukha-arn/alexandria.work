@@ -11,7 +11,6 @@ import jwt
 import pyotp
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from cryptography.fernet import Fernet
 
 from .config import Settings
 
@@ -44,13 +43,30 @@ def issue_token(settings: Settings, user_id: str, scope: str, ttl: int,
     jti = jti or uuid.uuid4().hex
     claims = {"iss": settings.issuer, "sub": user_id, "scope": scope, "jti": jti,
               "iat": now, "exp": now + ttl}
-    return jwt.encode(claims, settings.jwt_secret, algorithm="HS256"), jti, now + ttl
+    key = settings.jwt_keys.current
+    token = jwt.encode(claims, key.secret, algorithm="HS256", headers={"kid": key.kid})
+    return token, jti, now + ttl
 
 
 def decode_token(settings: Settings, token: str, scope: str) -> Dict[str, Any]:
-    """Raises jwt.PyJWTError for any invalid, expired or wrong-scope token."""
-    claims = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], issuer=settings.issuer,
-                        options={"require": ["exp", "iat", "sub", "jti", "scope"]})
+    """Raises jwt.PyJWTError for any invalid, expired or wrong-scope token. A token names the key
+    that signed it (``kid``); after a rotation, tokens signed by a not-yet-retired key still verify."""
+    kid = jwt.get_unverified_header(token).get("kid")
+    if kid is None:
+        candidates = settings.jwt_keys.keys           # tokens from before keys had ids
+    else:
+        known = settings.jwt_keys.get(kid)
+        candidates = [known] if known else []
+    claims, last = None, jwt.InvalidTokenError("unknown signing key")
+    for key in candidates:
+        try:
+            claims = jwt.decode(token, key.secret, algorithms=["HS256"], issuer=settings.issuer,
+                                options={"require": ["exp", "iat", "sub", "jti", "scope"]})
+            break
+        except jwt.InvalidSignatureError as exc:
+            last = exc
+    if claims is None:
+        raise last
     if claims["scope"] != scope:
         raise jwt.InvalidTokenError("wrong token scope")
     return claims
@@ -83,8 +99,8 @@ def verify_totp(secret: str, code: str, last_step: Optional[int], now: Optional[
 
 
 def encrypt_secret(settings: Settings, plaintext: str) -> str:
-    return Fernet(settings.fernet_key.encode()).encrypt(plaintext.encode()).decode()
+    return settings.cipher.encrypt(plaintext.encode()).decode()
 
 
 def decrypt_secret(settings: Settings, token: str) -> str:
-    return Fernet(settings.fernet_key.encode()).decrypt(token.encode()).decode()
+    return settings.cipher.decrypt(token.encode()).decode()

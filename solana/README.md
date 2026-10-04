@@ -9,7 +9,8 @@ Anchor program that stores Alexandria's tamper-evident audit trail on Solana.
 | `AuditEntry` | `["entry", index_le]` | One immutable record: keyed actor/action/payload hashes, department, required clearance, approver wallet, timestamp. |
 | `DocRecord` | `["doc", doc_hash]` | Proof a document version was approved. **Its existence is the tamper check.** |
 
-Instructions: `initialize`, `log_audit_event`, `anchor_document`. The last two are authority-only.
+Instructions: `initialize`, `log_audit_event`, `anchor_document`, `set_authority`. The last three are authority-only.
+`set_authority` rotates the write key and needs signatures from **both** the current and the new key, so a mistyped address cannot lock the ledger. See `docs/KEY-ROTATION.md`.
 
 ## Differences from the PRD's sample program (and why)
 - **Authority check.** The PRD's `log_audit_event` let *any* signer write any entry, so the log could be forged.

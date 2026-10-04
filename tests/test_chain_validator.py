@@ -160,3 +160,58 @@ def test_outbox_to_real_chain_end_to_end(authority_chain, tmp_path):
     e = authority_chain.get_entry(authority_chain.ledger()["next_index"] - 2)
     assert e["action_hash"] == hasher.mac("ACCESS_CLEARANCE_CHANGED").hex()
     assert e["action_hash"] != hashlib.sha256(b"ACCESS_CLEARANCE_CHANGED").hexdigest()
+
+
+# ----------------------------------------------------------------- key rotation (on-chain)
+def _balance(pubkey):
+    # "confirmed", like the client itself: the RPC default (finalized) lags a few seconds behind
+    return C.Rpc([URL]).call("getBalance", [str(pubkey), {"commitment": "confirmed"}])["value"]
+
+
+def test_authority_rotation_hands_over_write_access_and_funds(authority_chain):
+    old = authority_chain.authority
+    new = Keypair()                                    # brand new, unfunded: the sweep funds it
+    index_before = authority_chain.ledger()["next_index"]
+    old_before = _balance(old.pubkey())
+    assert old_before > 1_000_000
+    try:
+        authority_chain.rotate_authority(new)
+        assert authority_chain.ledger()["authority"] == str(new.pubkey())
+        assert _balance(old.pubkey()) < 10_000 and _balance(new.pubkey()) > old_before - 50_000   # funds moved
+
+        stale = C.SolanaChain(C.Rpc([URL]), old)
+        with pytest.raises(C.ProgramError):
+            stale.log_event(h(1), h(2), h(3), "x", 0)                       # the retired key is locked out
+        res = authority_chain.log_event(h(1), h(2), h(3), "x", 0)           # the client now signs with the new key
+        assert res.index == index_before                                    # the entry counter carried on
+    finally:
+        authority_chain.rotate_authority(old)                               # hand it back for the other tests
+    assert authority_chain.ledger()["authority"] == str(old.pubkey())
+    authority_chain.log_event(h(4), h(5), h(6), "x", 0)
+
+
+def test_an_attacker_cannot_rotate_the_authority(authority_chain):
+    attacker = Keypair()
+    _fund(attacker)
+    evil = C.SolanaChain(C.Rpc([URL]), attacker)
+    with pytest.raises(C.ProgramError):
+        evil.rotate_authority(Keypair(), sweep=False)                       # both keys sign, but not the ledger's authority
+    assert authority_chain.ledger()["authority"] == str(authority_chain.authority.pubkey())
+
+
+def test_handover_without_the_new_keys_signature_is_refused(authority_chain):
+    """A mistyped address cannot lock the ledger: the new key must prove it exists by signing."""
+    from solders.hash import Hash
+    from solders.instruction import AccountMeta, Instruction
+    from solders.message import Message
+    from solders.transaction import Transaction
+    typo = Keypair().pubkey()
+    metas = [AccountMeta(authority_chain.authority.pubkey(), is_signer=True, is_writable=False),
+             AccountMeta(typo, is_signer=False, is_writable=False),                 # not a signer
+             AccountMeta(authority_chain.ledger_pda, is_signer=False, is_writable=True)]
+    ix = Instruction(authority_chain.program, C._disc("set_authority"), metas)
+    bh = authority_chain.rpc.call("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]["blockhash"]
+    tx = Transaction([authority_chain.authority], Message([ix], authority_chain.authority.pubkey()), Hash.from_string(bh))
+    with pytest.raises(C.ProgramError):
+        authority_chain.rpc.send_and_confirm(tx)
+    assert authority_chain.ledger()["authority"] == str(authority_chain.authority.pubkey())

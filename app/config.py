@@ -3,25 +3,14 @@ a gitignored, owner-only ``.secrets/`` directory. They are never committed."""
 
 from __future__ import annotations
 
-import base64
 import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .keyring import Cipher, Keyring, make_fernet_key
+
 ROOT = Path(__file__).resolve().parent.parent
-
-
-def _load_secret(directory: Path, filename: str, env: str, make) -> str:
-    if os.getenv(env):
-        return os.environ[env]
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = directory / filename
-    if not path.exists():
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(make())
-    return path.read_text().strip()
 
 
 @dataclass
@@ -46,11 +35,14 @@ class Settings:
     totp_issuer: str = "Alexandria"
 
     def __post_init__(self) -> None:
-        self.jwt_secret = _load_secret(self.secrets_dir, "jwt.key", "ALEXANDRIA_JWT_SECRET",
-                                       lambda: secrets.token_urlsafe(64))
-        # Key for the HMAC used on actor/action/payload hashes that go on-chain: plain SHA-256
-        # of a small set of values (e.g. action names) could be reversed by anyone.
-        self.ledger_key = _load_secret(self.secrets_dir, "ledger.key", "ALEXANDRIA_LEDGER_KEY",
-                                       lambda: secrets.token_urlsafe(48))
-        self.fernet_key = _load_secret(self.secrets_dir, "totp.key", "ALEXANDRIA_FERNET_KEY",
-                                       lambda: base64.urlsafe_b64encode(os.urandom(32)).decode())
+        d = Path(self.secrets_dir)
+        # Rotatable keyrings (see app/keyring.py). Environment variables still give a single fixed key.
+        self.jwt_keys = Keyring(d / "jwt.keys.json", lambda: secrets.token_urlsafe(64),
+                                "ALEXANDRIA_JWT_SECRET", legacy_file=d / "jwt.key")
+        # Key for the HMAC on actor/action/payload hashes that go on-chain: plain SHA-256 of a small
+        # set of values (e.g. action names) could be reversed by anyone.
+        self.ledger_keys = Keyring(d / "ledger.keys.json", lambda: secrets.token_urlsafe(48),
+                                   "ALEXANDRIA_LEDGER_KEY", legacy_file=d / "ledger.key")
+        self.fernet_keys = Keyring(d / "fernet.keys.json", make_fernet_key,
+                                   "ALEXANDRIA_FERNET_KEY", legacy_file=d / "totp.key")
+        self.cipher = Cipher(self.fernet_keys)   # 2FA secrets and audit payloads, encrypted at rest

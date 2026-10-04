@@ -37,7 +37,10 @@ class Settings:
     lock_after: int = 5             # consecutive failures
     lock_seconds: int = 5 * 60
     min_password_length: int = 12
-    # A junior's brand-new document waits for senior approval too (the PRD only stages updates).
+    # Four-eyes: every document, whoever uploads it, needs one approval from a different person
+    # before it goes live. ALEXANDRIA_REQUIRE_APPROVAL=0 restores the PRD's senior auto-approve.
+    require_approval: bool = field(default_factory=lambda: os.getenv("ALEXANDRIA_REQUIRE_APPROVAL", "1") != "0")
+    # With the above off: a junior's brand-new document still waits for senior approval.
     junior_new_requires_review: bool = field(default_factory=lambda: os.getenv("ALEXANDRIA_JUNIOR_REVIEW", "1") != "0")
     max_upload_bytes: int = 25 * 1024 * 1024
     totp_issuer: str = "Alexandria"

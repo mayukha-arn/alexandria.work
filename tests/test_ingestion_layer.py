@@ -397,3 +397,25 @@ def test_senior_without_authority_over_the_parent_is_only_a_proposal(tmp_path, d
     ok = il.process_incoming_source("pdf", v2, "senior", "developer", db_path=db2,
                                     can_auto_approve=lambda doc: doc["min_role"] == "restricted")
     assert ok["status"] == "version_update_ingested"
+
+
+def test_always_review_stages_everything_whatever_the_seniority(tmp_path, db):
+    v1 = make_pdf(tmp_path / "v1.pdf", BASE_LINES)
+    new = il.process_incoming_source("pdf", v1, "senior", "developer", db_path=db, uploader_id="s1",
+                                     always_review=True)
+    assert new["status"] == "pending_approval" and new["is_new_document"] and il.list_documents(db) == []
+    ok = il.review_staged_update(new["staged_id"], "senior", True, reviewer="s2", db_path=db)
+    assert ok["status"] == "new_document_ingested"
+
+    upd = il.process_incoming_source("pdf", make_pdf(tmp_path / "v2.pdf", _delta_lines()), "senior", "developer",
+                                     db_path=db, uploader_id="s1", always_review=True)
+    assert upd["status"] == "pending_approval"
+    assert [d["status"] for d in il.list_documents(db)] == ["active"]       # v1 stays live meanwhile
+
+
+def test_nobody_can_review_their_own_submission_even_directly(tmp_path, db):
+    r = il.process_incoming_source("pdf", make_pdf(tmp_path / "a.pdf", BASE_LINES), "junior", "dev", db_path=db,
+                                   uploader_id="alice", junior_new_requires_review=True)
+    assert il.review_staged_update(r["staged_id"], "senior", True, reviewer="alice", db_path=db)["status_code"] == 403
+    assert il.list_documents(db) == []
+    assert il.review_staged_update(r["staged_id"], "senior", True, reviewer="bob", db_path=db)["status_code"] == 201

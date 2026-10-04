@@ -112,7 +112,8 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
     hasher = Hasher(settings.ledger_key)
     stop = threading.Event()
     docs: Optional[DocumentService] = (
-        DocumentService(store, vectors, settings.registry_path, settings.junior_new_requires_review)
+        DocumentService(store, vectors, settings.registry_path, settings.junior_new_requires_review,
+                        settings.require_approval)
         if vectors is not None else None)
 
     def anchor_loop() -> None:

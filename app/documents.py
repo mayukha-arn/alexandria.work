@@ -36,9 +36,11 @@ class DocError(Exception):
 
 class DocumentService:
     def __init__(self, store: Store, vectors: Any, registry_path: str,
-                 junior_new_requires_review: bool = True) -> None:
+                 junior_new_requires_review: bool = True, require_approval: bool = True) -> None:
         self.store, self.vectors, self.registry = store, vectors, registry_path
         self.junior_review = junior_new_requires_review
+        # Four-eyes: every document needs an approval from someone other than its uploader.
+        self.require_approval = require_approval
 
     # ------------------------------------------------------------------ helpers
     def _doc_clearance(self, label: str) -> int:
@@ -103,7 +105,8 @@ class DocumentService:
         res = il.process_incoming_source(
             source_type, path_or_url, R.ingestion_role(user), min_role, db_path=self.registry,
             uploader_id=user.id, department=department,
-            junior_new_requires_review=self.junior_review, source_label=label,
+            junior_new_requires_review=self.junior_review, always_review=self.require_approval,
+            source_label=label,
             # A senior may auto-approve an update only to documents they could approve and read.
             can_auto_approve=lambda doc: R.can_approve(user, doc["department"]) and R.can_read(user, doc["min_role"]))
 

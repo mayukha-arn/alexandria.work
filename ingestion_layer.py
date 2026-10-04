@@ -417,7 +417,8 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
                             department: Optional[str] = None,
                             junior_new_requires_review: bool = False,
                             source_label: Optional[str] = None,
-                            can_auto_approve: Optional[Callable[[Dict[str, Any]], bool]] = None) -> Dict[str, Any]:
+                            can_auto_approve: Optional[Callable[[Dict[str, Any]], bool]] = None,
+                            always_review: bool = False) -> Dict[str, Any]:
     """Run a PDF or web source through Layer 1.
 
     source_type: "pdf" or "web"
@@ -433,6 +434,9 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
                  senior's upload is an update to it. Return False if this senior has no authority
                  over that document (other department, below its clearance): the update is then
                  staged for the right approvers instead of replacing it.
+    always_review: when True, *nothing* goes live on its own: new documents and updates are
+                 staged for approval whatever the uploader's seniority (four-eyes). This
+                 supersedes the senior auto-approve and ``junior_new_requires_review``.
     junior_new_requires_review: when True, a brand-new document from a junior is staged for
                  senior approval too, instead of going straight live (the PRD only stages
                  *updates*; this closes the hole where a junior adds unreviewed content).
@@ -505,7 +509,7 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
             return _result(200, "near_duplicate_discarded", **match_info, **base)
 
         parent_hash = None
-        if similarity < DELTA_THRESHOLD and junior_new_requires_review and not is_senior:
+        if similarity < DELTA_THRESHOLD and (always_review or (junior_new_requires_review and not is_senior)):
             diff = compute_diff("", text, "(new document)", doc_hash[:12])
             risk_level, risk_reasons = assess_risk(diff, is_new=True)
             cur = conn.execute(
@@ -525,7 +529,7 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
             diff = compute_diff(match["raw_text"], text, match["doc_hash"][:12], doc_hash[:12])
             risk_level, risk_reasons = assess_risk(diff)
 
-            if not is_senior:
+            if always_review or not is_senior:
                 cur = conn.execute(
                     """INSERT INTO staged_updates
                        (doc_hash, parent_hash, source, source_type, min_role, department,
@@ -625,6 +629,8 @@ def review_staged_update(staged_id: int, approver_role: str, approve: bool,
             return _result(404, "error", error=f"staged update {staged_id} not found")
         if row["status"] != "pending_approval":
             return _result(409, "error", error=f"staged update already {row['status']}")
+        if reviewer and row["uploader_id"] and reviewer == row["uploader_id"]:
+            return _result(403, "error", error="you cannot review your own submission")
 
         conn.execute(
             "UPDATE staged_updates SET status = ?, reviewed_by = ?, reviewed_at = ?, "

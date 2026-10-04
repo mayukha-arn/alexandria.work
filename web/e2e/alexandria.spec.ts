@@ -176,7 +176,7 @@ test.describe.serial("Alexandria in a real browser", () => {
   test("senior colleagues link a signing wallet", async () => {
     for (const n of ["lead", "lead2"] as Name[]) {
       await go(pages[n], "Security");
-      await pages[n].getByRole("button", { name: "Create a demo wallet in this browser" }).click();
+      await pages[n].getByRole("button", { name: "Create a wallet in this browser" }).click();
       await expect(pages[n].getByTestId("wallet-key")).toBeVisible();
     }
   });

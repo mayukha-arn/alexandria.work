@@ -39,7 +39,7 @@ export default function SecurityPage() {
         <h2 className="font-semibold">Signing wallet</h2>
         {me?.wallet_pubkey ? (
           <>
-            <p className="text-sm">Linked: <code className="break-all font-mono text-xs" data-testid="wallet-key">{me.wallet_pubkey}</code> {hasDemoWallet() && demoSigner(false)?.publicKey === me.wallet_pubkey && <Badge tone="warn">demo wallet in this browser</Badge>}</p>
+            <p className="text-sm">Linked: <code className="break-all font-mono text-xs" data-testid="wallet-key">{me.wallet_pubkey}</code> {hasDemoWallet() && demoSigner(false)?.publicKey === me.wallet_pubkey && <Badge tone="brand">browser wallet</Badge>}</p>
             <p className="text-sm text-mute">Your approvals and rejections of documents are signed with this wallet, so who approved what can be proven. To change it, ask your manager or an admin to reset it.</p>
           </>
         ) : (
@@ -47,10 +47,10 @@ export default function SecurityPage() {
             <p className="text-sm text-mute">Link a Solana wallet to sign document reviews. You prove you control it by signing a one-time message; no funds or transactions are involved.</p>
             <div className="flex flex-wrap gap-2">
               <button className="btn btn-primary" disabled={busy || !phantomAvailable()} onClick={() => link(connectPhantom)} title={phantomAvailable() ? "" : "Phantom wasn't detected in this browser"}>Connect Phantom</button>
-              <button className="btn" disabled={busy} onClick={() => link(async () => demoSigner(true)!)}>Create a demo wallet in this browser</button>
+              <button className="btn" disabled={busy} onClick={() => link(async () => demoSigner(true)!)}>Create a wallet in this browser</button>
             </div>
             {!phantomAvailable() && <p className="text-xs text-mute">No Solana wallet extension detected. Install Phantom for real use.</p>}
-            <Notice>The demo wallet keeps its key in this browser's storage: fine for trying things out, not for real approvals.</Notice>
+            <Notice>A browser wallet keeps its key in this browser's storage. For high-value approvals, link Phantom or a hardware wallet instead.</Notice>
           </>
         )}
       </section>

@@ -25,7 +25,7 @@ export const phantomAvailable = () => provider() !== null;
 
 export async function connectPhantom(): Promise<Signer> {
   const p = provider();
-  if (!p) throw new Error("No Solana wallet found. Install Phantom, or use the demo wallet.");
+  if (!p) throw new Error("No Solana wallet found. Install Phantom, or create a wallet in this browser.");
   const { publicKey } = await p.connect();
   return {
     kind: "phantom",

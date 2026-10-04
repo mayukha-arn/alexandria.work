@@ -37,6 +37,9 @@ class Settings:
     lock_after: int = 5             # consecutive failures
     lock_seconds: int = 5 * 60
     min_password_length: int = 12
+    # A junior's brand-new document waits for senior approval too (the PRD only stages updates).
+    junior_new_requires_review: bool = field(default_factory=lambda: os.getenv("ALEXANDRIA_JUNIOR_REVIEW", "1") != "0")
+    max_upload_bytes: int = 25 * 1024 * 1024
     totp_issuer: str = "Alexandria"
 
     def __post_init__(self) -> None:

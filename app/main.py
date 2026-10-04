@@ -5,16 +5,19 @@ request, so a revoked right or lowered clearance takes effect immediately."""
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
+import tempfile
 import threading
 import time
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager, closing, contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import jwt
 import requests
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -22,6 +25,7 @@ import roles as R
 from . import security, wallet
 from .anchoring import Hasher, anchor_pending
 from .chain import ChainError
+from .documents import DocError, DocumentService
 from .rag import InputBlocked, ask as rag_ask
 from .redaction import render_event
 from .verify import verify_document
@@ -84,6 +88,17 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
 log = logging.getLogger("alexandria.api")
 
 
+class ChallengeBody(BaseModel):
+    action: str = Field(pattern="^(approve|reject)$")
+
+
+class DecisionBody(BaseModel):
+    approve: bool
+    note: Optional[str] = Field(default=None, max_length=1000)
+    nonce: str = Field(max_length=128)
+    signature: str = Field(max_length=200)
+
+
 class AskBody(BaseModel):
     question: str = Field(max_length=4000)
 
@@ -96,18 +111,24 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
     store = Store(settings.db_path, settings.fernet_key)
     hasher = Hasher(settings.ledger_key)
     stop = threading.Event()
+    docs: Optional[DocumentService] = (
+        DocumentService(store, vectors, settings.registry_path, settings.junior_new_requires_review)
+        if vectors is not None else None)
 
     def anchor_loop() -> None:
         while not stop.wait(anchor_interval):
             try:
-                anchor_pending(store, chain, hasher)
+                if chain is not None:
+                    anchor_pending(store, chain, hasher)
+                if docs is not None:
+                    docs.reindex_unindexed()
             except Exception:  # never let the loop die
-                log.exception("anchoring run failed")
+                log.exception("background run failed")
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         thread = None
-        if chain is not None:
+        if chain is not None or docs is not None:
             thread = threading.Thread(target=anchor_loop, name="anchor-loop", daemon=True)
             thread.start()
         yield
@@ -115,7 +136,16 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
 
     app = FastAPI(title="Alexandria", docs_url="/docs", lifespan=lifespan)
     app.state.settings, app.state.store, app.state.chain, app.state.hasher = settings, store, chain, hasher
-    app.state.vectors, app.state.llm = vectors, llm
+    app.state.vectors, app.state.llm, app.state.docs = vectors, llm, docs
+
+    @contextmanager
+    def doc_errors():
+        if docs is None:
+            raise HTTPException(503, "the document pipeline is not configured")
+        try:
+            yield
+        except DocError as exc:
+            raise HTTPException(exc.status, exc.detail)
     bearer = HTTPBearer(auto_error=False)
 
     def unauthorized(detail: str = "not authenticated") -> HTTPException:
@@ -331,6 +361,65 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         store.record_event("WALLET_RESET", actor.id, user_id, {"user": user_id}, department=tgt.department,
                            min_clearance=tgt.effective_clearance)
         return {"status": "reset"}
+
+    # ------------------------------------------------------------ documents
+    @app.post("/documents")
+    def upload_document(file: Optional[UploadFile] = File(None), url: Optional[str] = Form(None),
+                        min_role: str = Form("internal"), department: Optional[str] = Form(None),
+                        auth: Auth = Depends(token_user("access"))) -> JSONResponse:
+        """Upload a PDF or give a web URL. Returns 201 (live), 202 (waiting for senior review),
+        or 200 (duplicate)."""
+        with doc_errors():
+            if bool(file) == bool(url):
+                raise HTTPException(422, "provide exactly one of: file, url")
+            if url:
+                res = docs.ingest(auth.actor, auth.user["wallet_pubkey"], "web", url, url, min_role, department)
+            else:
+                head = file.file.read(5)
+                if head != b"%PDF-":
+                    raise HTTPException(422, "only PDF files are supported")
+                fd, tmp = tempfile.mkstemp(suffix=".pdf")
+                try:
+                    with os.fdopen(fd, "wb") as out:
+                        out.write(head)
+                        size = len(head)
+                        while chunk := file.file.read(1024 * 1024):
+                            size += len(chunk)
+                            if size > settings.max_upload_bytes:
+                                raise HTTPException(413, "file too large")
+                            out.write(chunk)
+                    label = "file:" + os.path.basename(file.filename or "upload.pdf")
+                    res = docs.ingest(auth.actor, auth.user["wallet_pubkey"], "pdf", tmp, label, min_role, department)
+                finally:
+                    os.unlink(tmp)
+            return JSONResponse(res, status_code=res.get("status_code", 200))
+
+    @app.get("/documents")
+    def list_documents(auth: Auth = Depends(token_user("access"))) -> List[Dict[str, Any]]:
+        with doc_errors():
+            return docs.list_documents(auth.actor)
+
+    @app.get("/documents/pending")
+    def pending_documents(auth: Auth = Depends(token_user("access"))) -> List[Dict[str, Any]]:
+        """The senior review queue: diffs and risk flags, limited to what you may approve."""
+        with doc_errors():
+            return docs.pending(auth.actor)
+
+    @app.post("/documents/pending/{staged_id}/challenge")
+    def review_challenge(staged_id: int, body: ChallengeBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with doc_errors():
+            return docs.challenge(auth.actor, auth.user["wallet_pubkey"], staged_id, body.action)
+
+    @app.post("/documents/pending/{staged_id}/decision")
+    def review_decision(staged_id: int, body: DecisionBody, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with doc_errors():
+            return docs.decide(auth.actor, auth.user["wallet_pubkey"], staged_id, body.approve,
+                               body.note, body.nonce, body.signature)
+
+    @app.delete("/documents/{doc_hash}")
+    def purge_document(doc_hash: str, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        with doc_errors():
+            return docs.purge(auth.actor, doc_hash)
 
     # ----------------------------------------------------------------- ask
     @app.post("/ask")

@@ -26,7 +26,7 @@ import socket
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import numpy as np
@@ -35,6 +35,8 @@ import requests
 from bs4 import BeautifulSoup
 from datasketch import MinHash
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from app import guardrails
 
 DB_PATH = "doc_registry.db"
 
@@ -95,6 +97,7 @@ def init_db(db_path: str = DB_PATH) -> None:
                 parent_hash    TEXT,
                 superseded_by  TEXT,
                 chunk_count    INTEGER NOT NULL DEFAULT 0,
+                indexed        INTEGER NOT NULL DEFAULT 0,  -- 1 once its chunks are in the vector store
                 timestamp      TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_docs(status);
@@ -102,7 +105,7 @@ def init_db(db_path: str = DB_PATH) -> None:
             CREATE TABLE IF NOT EXISTS staged_updates (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 doc_hash       TEXT NOT NULL UNIQUE,
-                parent_hash    TEXT NOT NULL,
+                parent_hash    TEXT,            -- NULL: a brand-new document awaiting review
                 source         TEXT NOT NULL,
                 source_type    TEXT NOT NULL,
                 min_role       TEXT NOT NULL,
@@ -136,12 +139,13 @@ def init_db(db_path: str = DB_PATH) -> None:
             """
         )
         # Upgrade registries created before department / uploader_id existed.
-        for table, wanted in (("processed_docs", ("department", "uploader_id")),
+        for table, wanted in (("processed_docs", ("department", "uploader_id", "indexed")),
                               ("staged_updates", ("department", "uploader_id", "review_note"))):
             cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
             for col in wanted:
                 if col not in cols:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                    kind = "INTEGER NOT NULL DEFAULT 0" if col == "indexed" else "TEXT"
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
         conn.commit()
 
 
@@ -282,7 +286,8 @@ def _minhash_from_blob(blob: bytes) -> MinHash:
 def _best_match(conn: sqlite3.Connection, mh: MinHash) -> Tuple[Optional[sqlite3.Row], float]:
     best_row, best_sim = None, 0.0
     for row in conn.execute(
-        "SELECT doc_hash, source, raw_text, minhash FROM processed_docs WHERE status = 'active'"
+        "SELECT doc_hash, source, raw_text, minhash, min_role, department "
+        "FROM processed_docs WHERE status = 'active'"
     ):
         sim = mh.jaccard(_minhash_from_blob(row["minhash"]))
         if sim > best_sim:
@@ -297,8 +302,13 @@ def compute_diff(old_text: str, new_text: str, old_label: str, new_label: str) -
     ))
 
 
-def assess_risk(diff: str) -> Tuple[str, List[str]]:
-    """Flag a delta as high risk when numbers or security-related terms change."""
+def assess_risk(diff: str, is_new: bool = False) -> Tuple[str, List[str]]:
+    """Flag a change as high risk (the senior review dashboard's "poisoning alerts").
+
+    Triggers: numbers changed, security-related terms in changed lines, or text in the added
+    lines that looks like a prompt-injection attempt / hidden characters. For a brand-new
+    document every line is "added", so the numeric trigger is skipped (it would always fire).
+    """
     removed, added = [], []
     for line in diff.splitlines():
         if line.startswith(("---", "+++", "@@")):
@@ -309,15 +319,19 @@ def assess_risk(diff: str) -> Tuple[str, List[str]]:
             added.append(line[1:])
 
     reasons: List[str] = []
-    old_nums = set(_NUMBER_RE.findall("\n".join(removed)))
-    new_nums = set(_NUMBER_RE.findall("\n".join(added)))
-    if old_nums != new_nums:
-        changed = sorted(old_nums.symmetric_difference(new_nums))
-        reasons.append(f"numeric values changed: {', '.join(changed[:20])}")
+    if not is_new:
+        old_nums = set(_NUMBER_RE.findall("\n".join(removed)))
+        new_nums = set(_NUMBER_RE.findall("\n".join(added)))
+        if old_nums != new_nums:
+            changed = sorted(old_nums.symmetric_difference(new_nums))
+            reasons.append(f"numeric values changed: {', '.join(changed[:20])}")
 
     sec_terms = sorted({m.group(0).lower() for m in _SECURITY_RE.finditer("\n".join(removed + added))})
     if sec_terms:
         reasons.append(f"security-related terms in changed lines: {', '.join(sec_terms)}")
+
+    for finding in guardrails.scan_text("\n".join(added))[:5]:
+        reasons.append(f"possible poisoning: {finding}")
 
     return ("high" if reasons else "normal"), reasons
 
@@ -400,7 +414,10 @@ def _insert_active(conn: sqlite3.Connection, *, doc_hash: str, source: str, sour
 def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
                             min_role: str, db_path: str = DB_PATH,
                             uploader_id: Optional[str] = None,
-                            department: Optional[str] = None) -> Dict[str, Any]:
+                            department: Optional[str] = None,
+                            junior_new_requires_review: bool = False,
+                            source_label: Optional[str] = None,
+                            can_auto_approve: Optional[Callable[[Dict[str, Any]], bool]] = None) -> Dict[str, Any]:
     """Run a PDF or web source through Layer 1.
 
     source_type: "pdf" or "web"
@@ -409,6 +426,16 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
     min_role:    minimum role allowed to read the resulting chunks.
     uploader_id: who uploaded it; recorded for the audit trail.
     department:  owning department; stored in chunk metadata.
+
+    source_label: name recorded as the document's source (e.g. the uploaded filename) instead
+                 of ``path_or_url``, which for an upload is only a temporary path.
+    can_auto_approve: called with the matched document (``min_role``, ``department``) when a
+                 senior's upload is an update to it. Return False if this senior has no authority
+                 over that document (other department, below its clearance): the update is then
+                 staged for the right approvers instead of replacing it.
+    junior_new_requires_review: when True, a brand-new document from a junior is staged for
+                 senior approval too, instead of going straight live (the PRD only stages
+                 *updates*; this closes the hole where a junior adds unreviewed content).
 
     Only seniors get back the diff / matched document hash: a delta is computed
     against a document the uploader may not be cleared to read.
@@ -446,7 +473,8 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
     # Part B
     doc_hash = sha256_text(text)
     timestamp = _now()
-    base = {"doc_hash": doc_hash, "source": path_or_url, "extraction": extraction_meta}
+    source = source_label or path_or_url
+    base = {"doc_hash": doc_hash, "source": source, "extraction": extraction_meta}
 
     with _connect(db_path) as conn:
         row = conn.execute("SELECT status FROM processed_docs WHERE doc_hash = ?", (doc_hash,)).fetchone()
@@ -463,6 +491,10 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
         match, similarity = _best_match(conn, mh)
         similarity = round(similarity, 4)
         is_senior = uploader_role == "senior"
+        if (is_senior and match is not None and similarity >= DELTA_THRESHOLD
+                and can_auto_approve is not None
+                and not can_auto_approve({"min_role": match["min_role"], "department": match["department"]})):
+            is_senior = False  # no authority over this document: the upload is only a proposal
         # The matched document may be above the uploader's clearance, so its hash
         # (and any diff against it) is only revealed to seniors.
         match_info: Dict[str, Any] = {"similarity": similarity} if match else {}
@@ -473,6 +505,22 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
             return _result(200, "near_duplicate_discarded", **match_info, **base)
 
         parent_hash = None
+        if similarity < DELTA_THRESHOLD and junior_new_requires_review and not is_senior:
+            diff = compute_diff("", text, "(new document)", doc_hash[:12])
+            risk_level, risk_reasons = assess_risk(diff, is_new=True)
+            cur = conn.execute(
+                """INSERT INTO staged_updates
+                   (doc_hash, parent_hash, source, source_type, min_role, department,
+                    uploader_id, uploader_role, similarity, diff, risk_level, risk_reasons,
+                    raw_text, minhash, status, timestamp)
+                   VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)""",
+                (doc_hash, source, source_type, min_role, department, uploader_id,
+                 uploader_role, similarity, diff, risk_level, json.dumps(risk_reasons),
+                 text, mh_blob, timestamp),
+            )
+            return _result(202, "pending_approval", staged_id=cur.lastrowid, is_new_document=True,
+                           risk_level=risk_level, **match_info, **base)
+
         if similarity >= DELTA_THRESHOLD:
             diff = compute_diff(match["raw_text"], text, match["doc_hash"][:12], doc_hash[:12])
             risk_level, risk_reasons = assess_risk(diff)
@@ -484,7 +532,7 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
                         uploader_id, uploader_role, similarity, diff, risk_level, risk_reasons,
                         raw_text, minhash, status, timestamp)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)""",
-                    (doc_hash, match["doc_hash"], path_or_url, source_type, min_role,
+                    (doc_hash, match["doc_hash"], source, source_type, min_role,
                      department, uploader_id, uploader_role, similarity, diff, risk_level,
                      json.dumps(risk_reasons), text, mh_blob, timestamp),
                 )
@@ -497,8 +545,8 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
             match_info.update(risk_level=risk_level, risk_reasons=risk_reasons, diff=diff)
 
         # Part D
-        chunks = chunk_document(text, doc_hash, path_or_url, min_role, timestamp, department)
-        _insert_active(conn, doc_hash=doc_hash, source=path_or_url, source_type=source_type,
+        chunks = chunk_document(text, doc_hash, source, min_role, timestamp, department)
+        _insert_active(conn, doc_hash=doc_hash, source=source, source_type=source_type,
                        min_role=min_role, uploader_role=uploader_role, raw_text=text,
                        minhash_blob=mh_blob, parent_hash=parent_hash,
                        chunk_count=len(chunks), timestamp=timestamp,
@@ -517,7 +565,7 @@ def list_pending_updates(db_path: str = DB_PATH,
                          department: Optional[str] = None) -> List[Dict[str, Any]]:
     """The senior review queue (diff + risk flags), high-risk first. Pass
     ``department`` to show a reviewer only their own department's items."""
-    sql = """SELECT id, doc_hash, parent_hash, source, department, uploader_id,
+    sql = """SELECT id, doc_hash, parent_hash, source, min_role, department, uploader_id,
                     uploader_role, similarity, risk_level, risk_reasons, diff, timestamp
              FROM staged_updates WHERE status = 'pending_approval'"""
     args: Tuple[Any, ...] = ()
@@ -527,7 +575,8 @@ def list_pending_updates(db_path: str = DB_PATH,
     sql += " ORDER BY (risk_level = 'high') DESC, id"
     with _connect(db_path) as conn:
         rows = conn.execute(sql, args).fetchall()
-    return [{**dict(r), "risk_reasons": json.loads(r["risk_reasons"])} for r in rows]
+    return [{**dict(r), "risk_reasons": json.loads(r["risk_reasons"]),
+             "is_new_document": r["parent_hash"] is None} for r in rows]
 
 
 def _bump_flag(conn: sqlite3.Connection, kind: str, key: Optional[str],
@@ -592,9 +641,9 @@ def review_staged_update(staged_id: int, approver_role: str, approve: bool,
                            uploader_id=row["uploader_id"], flags=flags,
                            audit_alert=True)
 
-        parent = conn.execute("SELECT status FROM processed_docs WHERE doc_hash = ?",
-                              (row["parent_hash"],)).fetchone()
-        if not parent or parent["status"] != "active":
+        parent = (conn.execute("SELECT status FROM processed_docs WHERE doc_hash = ?",
+                               (row["parent_hash"],)).fetchone() if row["parent_hash"] else None)
+        if row["parent_hash"] and (not parent or parent["status"] != "active"):
             conn.rollback()
             return _result(409, "error", error="parent version is no longer active; "
                                                "resubmit the document against the current version")
@@ -608,8 +657,57 @@ def review_staged_update(staged_id: int, approver_role: str, approve: bool,
                        chunk_count=len(chunks), timestamp=timestamp,
                        department=row["department"], uploader_id=row["uploader_id"])
 
-    return _result(201, "version_update_ingested", staged_id=staged_id, doc_hash=row["doc_hash"],
+    status = "version_update_ingested" if row["parent_hash"] else "new_document_ingested"
+    return _result(201, status, staged_id=staged_id, doc_hash=row["doc_hash"],
                    deprecated_doc_hash=row["parent_hash"], chunk_count=len(chunks), chunks=chunks)
+
+
+# --------------------------------------------------------------------------- #
+# Registry helpers used by the application layer
+# --------------------------------------------------------------------------- #
+
+def list_documents(db_path: str = DB_PATH, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    sql = ("SELECT doc_hash, source, source_type, min_role, department, uploader_id, status, "
+           "parent_hash, superseded_by, chunk_count, indexed, timestamp FROM processed_docs")
+    args: Tuple[Any, ...] = ()
+    if status:
+        sql, args = sql + " WHERE status = ?", (status,)
+    with _connect(db_path) as conn:
+        return [dict(r) for r in conn.execute(sql + " ORDER BY timestamp DESC", args)]
+
+
+def get_document(doc_hash: str, db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT doc_hash, source, source_type, min_role, department, uploader_id, "
+                           "status, parent_hash, chunk_count, indexed, timestamp FROM processed_docs "
+                           "WHERE doc_hash = ?", (doc_hash,)).fetchone()
+    return dict(row) if row else None
+
+
+def mark_indexed(doc_hash: str, db_path: str = DB_PATH) -> None:
+    with _connect(db_path) as conn:
+        conn.execute("UPDATE processed_docs SET indexed = 1 WHERE doc_hash = ?", (doc_hash,))
+
+
+def chunks_for(doc_hash: str, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    """Re-derive a document's chunks (deterministic ids), e.g. to re-index after a failure."""
+    with _connect(db_path) as conn:
+        r = conn.execute("SELECT raw_text, source, min_role, department, timestamp FROM processed_docs "
+                         "WHERE doc_hash = ?", (doc_hash,)).fetchone()
+    if not r:
+        return []
+    return chunk_document(r["raw_text"], doc_hash, r["source"], r["min_role"], r["timestamp"], r["department"])
+
+
+def purge_document(doc_hash: str, db_path: str = DB_PATH) -> bool:
+    """Right to be forgotten: remove the document and any staged proposals that reference it.
+    The caller must purge its vectors; an on-chain record, if any, holds only the hash."""
+    with _connect(db_path) as conn:
+        gone = conn.execute("DELETE FROM processed_docs WHERE doc_hash = ?", (doc_hash,)).rowcount
+        conn.execute("DELETE FROM staged_updates WHERE doc_hash = ? OR parent_hash = ?", (doc_hash, doc_hash))
+        conn.execute("UPDATE processed_docs SET parent_hash = NULL WHERE parent_hash = ?", (doc_hash,))
+        conn.execute("UPDATE processed_docs SET superseded_by = NULL WHERE superseded_by = ?", (doc_hash,))
+    return bool(gone)
 
 
 if __name__ == "__main__":

@@ -20,11 +20,14 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import ipaddress
 import re
+import socket
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import numpy as np
 import pdfplumber
@@ -40,6 +43,7 @@ MINHASH_SCHEME = "affine32"  # pinned so stored signatures stay comparable acros
 SHINGLE_SIZE = 3  # word n-grams used as MinHash shingles
 EXACT_THRESHOLD = 0.98
 DELTA_THRESHOLD = 0.50
+FLAG_THRESHOLD = 3  # rejected submissions before an account / source is flagged
 
 CHUNK_SIZE = 512  # tokens
 CHUNK_OVERLAP = 50  # tokens
@@ -49,15 +53,23 @@ USER_AGENT = "Alexandria-Ingestion/1.0 (+internal document crawler)"
 HTTP_TIMEOUT = 20
 STRIP_TAGS = ("script", "style", "nav", "header", "footer", "noscript")
 
-SECURITY_TERMS = (
-    "password", "passwd", "secret", "token", "api key", "apikey", "credential",
-    "auth", "oauth", "sso", "mfa", "2fa", "permission", "privilege", "role",
-    "admin", "root", "sudo", "encrypt", "decrypt", "tls", "ssl", "certificate",
-    "firewall", "port", "endpoint", "access", "allowlist", "whitelist",
-    "denylist", "blacklist", "vulnerab", "cve", "public", "private key",
+# Whole-word terms (optional plural). Matching "auth" or "port" as substrings
+# would flag "author", "support", "important", "report", ...
+SECURITY_WORDS = (
+    "password", "passwd", "secret", "token", "credential", "auth", "oauth", "sso",
+    "mfa", "2fa", "permission", "privilege", "role", "admin", "root", "sudo",
+    "tls", "ssl", "certificate", "firewall", "port", "endpoint", "access",
+    "allowlist", "whitelist", "denylist", "blacklist", "cve", "public",
+    "api key", "apikey", "private key", "authentication", "authorization",
 )
+# Stems matched as word prefixes (encrypt -> encrypted / encryption).
+SECURITY_STEMS = ("encrypt", "decrypt", "vulnerab")
 _NUMBER_RE = re.compile(r"\d+(?:[.,:/-]\d+)*")
-_SECURITY_RE = re.compile("|".join(re.escape(t) for t in SECURITY_TERMS), re.IGNORECASE)
+_SECURITY_RE = re.compile(
+    r"\b(?:(?:" + "|".join(re.escape(t) for t in SECURITY_WORDS) + r")(?:s|es)?\b|"
+    + "|".join(re.escape(t) for t in SECURITY_STEMS) + r")",
+    re.IGNORECASE,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -74,6 +86,8 @@ def init_db(db_path: str = DB_PATH) -> None:
                 source         TEXT NOT NULL,
                 source_type    TEXT NOT NULL,
                 min_role       TEXT NOT NULL,
+                department     TEXT,
+                uploader_id    TEXT,
                 uploader_role  TEXT NOT NULL,
                 status         TEXT NOT NULL CHECK (status IN ('active', 'deprecated')),
                 raw_text       TEXT NOT NULL,
@@ -92,6 +106,8 @@ def init_db(db_path: str = DB_PATH) -> None:
                 source         TEXT NOT NULL,
                 source_type    TEXT NOT NULL,
                 min_role       TEXT NOT NULL,
+                department     TEXT,
+                uploader_id    TEXT,
                 uploader_role  TEXT NOT NULL,
                 similarity     REAL NOT NULL,
                 diff           TEXT NOT NULL,
@@ -103,11 +119,30 @@ def init_db(db_path: str = DB_PATH) -> None:
                                CHECK (status IN ('pending_approval', 'approved', 'rejected')),
                 reviewed_by    TEXT,
                 reviewed_at    TEXT,
+                review_note    TEXT,
                 timestamp      TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_staged_status ON staged_updates(status);
+
+            -- Rejected submissions per uploader account / source (data-poisoning signal).
+            CREATE TABLE IF NOT EXISTS flags (
+                kind           TEXT NOT NULL CHECK (kind IN ('account', 'source')),
+                key            TEXT NOT NULL,
+                rejections     INTEGER NOT NULL DEFAULT 0,
+                last_reason    TEXT,
+                last_at        TEXT NOT NULL,
+                PRIMARY KEY (kind, key)
+            );
             """
         )
+        # Upgrade registries created before department / uploader_id existed.
+        for table, wanted in (("processed_docs", ("department", "uploader_id")),
+                              ("staged_updates", ("department", "uploader_id", "review_note"))):
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for col in wanted:
+                if col not in cols:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+        conn.commit()
 
 
 @contextmanager
@@ -177,8 +212,26 @@ def extract_pdf(path: str) -> Tuple[str, Dict[str, Any]]:
     return "\n\n".join(pages_out), meta
 
 
+def _validate_url(url: str) -> None:
+    """Only http(s) is allowed, and cloud-metadata / link-local targets are blocked
+    so the crawler cannot be pointed at instance credentials. Internal hosts are
+    otherwise allowed because this is an internal-docs tool."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"only http(s) URLs are allowed: {url!r}")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror:
+        return  # unresolvable here; the HTTP fetch will fail on its own
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip.is_link_local:
+            raise ValueError(f"blocked address {ip} for {parsed.hostname!r}")
+
+
 def extract_web(url: str) -> Tuple[str, Dict[str, Any]]:
     """Fetch a static page and return only its main content text."""
+    _validate_url(url)
     resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -297,12 +350,13 @@ def _get_splitter() -> RecursiveCharacterTextSplitter:
 
 
 def chunk_document(text: str, doc_hash: str, source: str, min_role: str,
-                   timestamp: str) -> List[Dict[str, Any]]:
+                   timestamp: str, department: Optional[str] = None) -> List[Dict[str, Any]]:
     return [
         {
             "chunk_id": f"{doc_hash}_{i}",
             "doc_hash": doc_hash,
             "source": source,
+            "department": department,
             "min_role": min_role,
             "status": "active",
             "timestamp": timestamp,
@@ -326,14 +380,15 @@ def _result(status_code: int, status: str, **fields: Any) -> Dict[str, Any]:
 
 def _insert_active(conn: sqlite3.Connection, *, doc_hash: str, source: str, source_type: str,
                    min_role: str, uploader_role: str, raw_text: str, minhash_blob: bytes,
-                   parent_hash: Optional[str], chunk_count: int, timestamp: str) -> None:
+                   parent_hash: Optional[str], chunk_count: int, timestamp: str,
+                   department: Optional[str] = None, uploader_id: Optional[str] = None) -> None:
     conn.execute(
         """INSERT INTO processed_docs
-           (doc_hash, source, source_type, min_role, uploader_role, status, raw_text,
-            minhash, parent_hash, chunk_count, timestamp)
-           VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
-        (doc_hash, source, source_type, min_role, uploader_role, raw_text,
-         minhash_blob, parent_hash, chunk_count, timestamp),
+           (doc_hash, source, source_type, min_role, department, uploader_id, uploader_role,
+            status, raw_text, minhash, parent_hash, chunk_count, timestamp)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
+        (doc_hash, source, source_type, min_role, department, uploader_id, uploader_role,
+         raw_text, minhash_blob, parent_hash, chunk_count, timestamp),
     )
     if parent_hash:
         conn.execute(
@@ -343,13 +398,20 @@ def _insert_active(conn: sqlite3.Connection, *, doc_hash: str, source: str, sour
 
 
 def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
-                            min_role: str, db_path: str = DB_PATH) -> Dict[str, Any]:
+                            min_role: str, db_path: str = DB_PATH,
+                            uploader_id: Optional[str] = None,
+                            department: Optional[str] = None) -> Dict[str, Any]:
     """Run a PDF or web source through Layer 1.
 
     source_type: "pdf" or "web"
     user_role:   uploader's role; only "senior" may auto-approve deltas, anything
                  else is treated as "junior".
     min_role:    minimum role allowed to read the resulting chunks.
+    uploader_id: who uploaded it; recorded for the audit trail.
+    department:  owning department; stored in chunk metadata.
+
+    Only seniors get back the diff / matched document hash: a delta is computed
+    against a document the uploader may not be cleared to read.
 
     Returns a JSON-serializable dict with "status_code" and "status", plus
     chunks (ingested), a staging alert (pending_approval) or the reason the
@@ -367,6 +429,10 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
             raw, extraction_meta = extract_web(path_or_url)
         else:
             return _result(400, "error", error=f"unsupported source_type: {source_type!r}")
+    except ValueError as exc:  # rejected URL
+        if source_type != "pdf":
+            return _result(400, "error", error=str(exc))
+        return _result(422, "error", error=f"extraction failed: {exc}")
     except requests.RequestException as exc:
         return _result(502, "error", error=f"fetch failed: {exc}")
     except Exception as exc:  # malformed / unreadable file
@@ -396,7 +462,12 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
         mh_blob = _minhash_to_blob(mh)
         match, similarity = _best_match(conn, mh)
         similarity = round(similarity, 4)
-        match_info = {"matched_doc_hash": match["doc_hash"], "similarity": similarity} if match else {}
+        is_senior = uploader_role == "senior"
+        # The matched document may be above the uploader's clearance, so its hash
+        # (and any diff against it) is only revealed to seniors.
+        match_info: Dict[str, Any] = {"similarity": similarity} if match else {}
+        if match and is_senior:
+            match_info["matched_doc_hash"] = match["doc_hash"]
 
         if similarity >= EXACT_THRESHOLD:
             return _result(200, "near_duplicate_discarded", **match_info, **base)
@@ -406,30 +477,32 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
             diff = compute_diff(match["raw_text"], text, match["doc_hash"][:12], doc_hash[:12])
             risk_level, risk_reasons = assess_risk(diff)
 
-            if uploader_role != "senior":
+            if not is_senior:
                 cur = conn.execute(
                     """INSERT INTO staged_updates
-                       (doc_hash, parent_hash, source, source_type, min_role, uploader_role,
-                        similarity, diff, risk_level, risk_reasons, raw_text, minhash,
-                        status, timestamp)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)""",
+                       (doc_hash, parent_hash, source, source_type, min_role, department,
+                        uploader_id, uploader_role, similarity, diff, risk_level, risk_reasons,
+                        raw_text, minhash, status, timestamp)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)""",
                     (doc_hash, match["doc_hash"], path_or_url, source_type, min_role,
-                     uploader_role, similarity, diff, risk_level, json.dumps(risk_reasons),
-                     text, mh_blob, timestamp),
+                     department, uploader_id, uploader_role, similarity, diff, risk_level,
+                     json.dumps(risk_reasons), text, mh_blob, timestamp),
                 )
+                # No diff / risk reasons here: they quote the existing document.
+                # Seniors read them through list_pending_updates().
                 return _result(202, "pending_approval", staged_id=cur.lastrowid,
-                               risk_level=risk_level, risk_reasons=risk_reasons,
-                               diff=diff, **match_info, **base)
+                               risk_level=risk_level, **match_info, **base)
 
             parent_hash = match["doc_hash"]
             match_info.update(risk_level=risk_level, risk_reasons=risk_reasons, diff=diff)
 
         # Part D
-        chunks = chunk_document(text, doc_hash, path_or_url, min_role, timestamp)
+        chunks = chunk_document(text, doc_hash, path_or_url, min_role, timestamp, department)
         _insert_active(conn, doc_hash=doc_hash, source=path_or_url, source_type=source_type,
                        min_role=min_role, uploader_role=uploader_role, raw_text=text,
                        minhash_blob=mh_blob, parent_hash=parent_hash,
-                       chunk_count=len(chunks), timestamp=timestamp)
+                       chunk_count=len(chunks), timestamp=timestamp,
+                       department=department, uploader_id=uploader_id)
 
     status = "version_update_ingested" if parent_hash else "new_document_ingested"
     return _result(201, status, deprecated_doc_hash=parent_hash, chunk_count=len(chunks),
@@ -440,22 +513,58 @@ def process_incoming_source(source_type: str, path_or_url: str, user_role: str,
 # Staging review
 # --------------------------------------------------------------------------- #
 
-def list_pending_updates(db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+def list_pending_updates(db_path: str = DB_PATH,
+                         department: Optional[str] = None) -> List[Dict[str, Any]]:
+    """The senior review queue (diff + risk flags), high-risk first. Pass
+    ``department`` to show a reviewer only their own department's items."""
+    sql = """SELECT id, doc_hash, parent_hash, source, department, uploader_id,
+                    uploader_role, similarity, risk_level, risk_reasons, diff, timestamp
+             FROM staged_updates WHERE status = 'pending_approval'"""
+    args: Tuple[Any, ...] = ()
+    if department is not None:
+        sql += " AND department = ?"
+        args = (department,)
+    sql += " ORDER BY (risk_level = 'high') DESC, id"
+    with _connect(db_path) as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return [{**dict(r), "risk_reasons": json.loads(r["risk_reasons"])} for r in rows]
+
+
+def _bump_flag(conn: sqlite3.Connection, kind: str, key: Optional[str],
+               reason: Optional[str], timestamp: str) -> Optional[Dict[str, Any]]:
+    if not key:
+        return None
+    conn.execute(
+        """INSERT INTO flags (kind, key, rejections, last_reason, last_at) VALUES (?, ?, 1, ?, ?)
+           ON CONFLICT(kind, key) DO UPDATE SET rejections = rejections + 1,
+               last_reason = excluded.last_reason, last_at = excluded.last_at""",
+        (kind, key, reason, timestamp),
+    )
+    n = conn.execute("SELECT rejections FROM flags WHERE kind = ? AND key = ?", (kind, key)).fetchone()[0]
+    return {"kind": kind, "key": key, "rejections": n, "flagged": n >= FLAG_THRESHOLD}
+
+
+def list_flags(db_path: str = DB_PATH, only_flagged: bool = True) -> List[Dict[str, Any]]:
     with _connect(db_path) as conn:
         rows = conn.execute(
-            """SELECT id, doc_hash, parent_hash, source, uploader_role, similarity,
-                      risk_level, risk_reasons, diff, timestamp
-               FROM staged_updates WHERE status = 'pending_approval' ORDER BY id"""
+            "SELECT kind, key, rejections, last_reason, last_at FROM flags "
+            "WHERE rejections >= ? ORDER BY rejections DESC",
+            (FLAG_THRESHOLD if only_flagged else 1,),
         ).fetchall()
-    return [{**dict(r), "risk_reasons": json.loads(r["risk_reasons"])} for r in rows]
+    return [dict(r) for r in rows]
 
 
 def review_staged_update(staged_id: int, approver_role: str, approve: bool,
                          reviewer: Optional[str] = None,
-                         db_path: str = DB_PATH) -> Dict[str, Any]:
+                         db_path: str = DB_PATH,
+                         note: Optional[str] = None) -> Dict[str, Any]:
     """Approve or reject a staged delta. Only a senior may review.
 
-    Approval deprecates the parent version and returns the new document's chunks.
+    Until this runs, the previous version stays active and the proposed text is
+    neither chunked nor searchable. Approval deprecates the parent version and
+    returns the new document's chunks. Rejection discards the proposal, records
+    ``note``, and counts a strike against the uploader account and the source; the
+    caller must write the audit alert for the returned ``flags``.
     """
     if approver_role.lower().strip() != "senior":
         return _result(403, "error", error="only senior users may review staged updates")
@@ -469,11 +578,19 @@ def review_staged_update(staged_id: int, approver_role: str, approve: bool,
             return _result(409, "error", error=f"staged update already {row['status']}")
 
         conn.execute(
-            "UPDATE staged_updates SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?",
-            ("approved" if approve else "rejected", reviewer or approver_role, timestamp, staged_id),
+            "UPDATE staged_updates SET status = ?, reviewed_by = ?, reviewed_at = ?, "
+            "review_note = ? WHERE id = ?",
+            ("approved" if approve else "rejected", reviewer or approver_role, timestamp,
+             note, staged_id),
         )
         if not approve:
-            return _result(200, "rejected", staged_id=staged_id, doc_hash=row["doc_hash"])
+            flags = [f for f in (
+                _bump_flag(conn, "account", row["uploader_id"], note, timestamp),
+                _bump_flag(conn, "source", row["source"], note, timestamp),
+            ) if f]
+            return _result(200, "rejected", staged_id=staged_id, doc_hash=row["doc_hash"],
+                           uploader_id=row["uploader_id"], flags=flags,
+                           audit_alert=True)
 
         parent = conn.execute("SELECT status FROM processed_docs WHERE doc_hash = ?",
                               (row["parent_hash"],)).fetchone()
@@ -483,12 +600,13 @@ def review_staged_update(staged_id: int, approver_role: str, approve: bool,
                                                "resubmit the document against the current version")
 
         chunks = chunk_document(row["raw_text"], row["doc_hash"], row["source"],
-                                row["min_role"], timestamp)
+                                row["min_role"], timestamp, row["department"])
         _insert_active(conn, doc_hash=row["doc_hash"], source=row["source"],
                        source_type=row["source_type"], min_role=row["min_role"],
                        uploader_role=row["uploader_role"], raw_text=row["raw_text"],
                        minhash_blob=row["minhash"], parent_hash=row["parent_hash"],
-                       chunk_count=len(chunks), timestamp=timestamp)
+                       chunk_count=len(chunks), timestamp=timestamp,
+                       department=row["department"], uploader_id=row["uploader_id"])
 
     return _result(201, "version_update_ingested", staged_id=staged_id, doc_hash=row["doc_hash"],
                    deprecated_doc_hash=row["parent_hash"], chunk_count=len(chunks), chunks=chunks)
@@ -503,6 +621,9 @@ if __name__ == "__main__":
     ap.add_argument("--user-role", default="junior")
     ap.add_argument("--min-role", default="employee")
     ap.add_argument("--db", default=DB_PATH)
+    ap.add_argument("--uploader-id")
+    ap.add_argument("--department")
     args = ap.parse_args()
     print(json.dumps(process_incoming_source(args.source_type, args.path_or_url,
-                                             args.user_role, args.min_role, args.db), indent=2))
+                                             args.user_role, args.min_role, args.db,
+                                             args.uploader_id, args.department), indent=2))

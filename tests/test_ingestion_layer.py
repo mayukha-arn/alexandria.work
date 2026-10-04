@@ -86,8 +86,8 @@ def test_near_duplicate_discarded(monkeypatch, db):
     pages = iter([html_page(BASE_LINES), html_page(BASE_LINES + ["  "]).replace("<p>", "<p> ")])
     # whitespace-only differences normalize to the same hash -> duplicate_skipped
     monkeypatch.setattr(il.requests, "get", lambda *a, **k: FakeResp(next(pages)))
-    il.process_incoming_source("web", "u1", "senior", "employee", db_path=db)
-    assert il.process_incoming_source("web", "u2", "senior", "employee", db_path=db)["status"] == "duplicate_skipped"
+    il.process_incoming_source("web", "https://docs.example/u1", "senior", "employee", db_path=db)
+    assert il.process_incoming_source("web", "https://docs.example/u2", "senior", "employee", db_path=db)["status"] == "duplicate_skipped"
 
     # a one-word change in a long document is a near-exact duplicate
     long_lines = BASE_LINES * 5
@@ -95,8 +95,8 @@ def test_near_duplicate_discarded(monkeypatch, db):
     tweaked[-1] = tweaked[-1].replace("totals", "sums")
     pages = iter([html_page(long_lines), html_page(tweaked)])
     db2 = db + "2"
-    il.process_incoming_source("web", "u1", "senior", "employee", db_path=db2)
-    r = il.process_incoming_source("web", "u2", "senior", "employee", db_path=db2)
+    il.process_incoming_source("web", "https://docs.example/u1", "senior", "employee", db_path=db2)
+    r = il.process_incoming_source("web", "https://docs.example/u2", "senior", "employee", db_path=db2)
     assert r["status"] == "near_duplicate_discarded"
     assert r["similarity"] >= il.EXACT_THRESHOLD
 
@@ -119,7 +119,9 @@ def test_junior_delta_staged_high_risk_then_senior_approves(tmp_path, db):
     assert il.DELTA_THRESHOLD <= r["similarity"] < il.EXACT_THRESHOLD
     assert r["risk_level"] == "high"
     assert "chunks" not in r
-    assert r["diff"].startswith("---")
+    # the diff quotes the existing document, so the uploader must not receive it
+    assert "diff" not in r and "risk_reasons" not in r and "matched_doc_hash" not in r
+    assert il.list_pending_updates(db)[0]["diff"].startswith("---")
 
     # resubmitting the same pending text is skipped, not double-staged
     again = il.process_incoming_source("pdf", v2, "junior", "developer", db_path=db)
@@ -189,3 +191,115 @@ def test_bad_inputs(tmp_path, db):
     bad = tmp_path / "bad.pdf"
     bad.write_bytes(b"not a pdf")
     assert il.process_incoming_source("pdf", str(bad), "senior", "dev", db_path=db)["status_code"] == 422
+
+
+def test_risk_terms_match_whole_words_only():
+    benign = il.compute_diff("Our support team will report to the author on Friday.",
+                             "Our support team will report to the author on Monday.", "a", "b")
+    assert il.assess_risk(benign) == ("normal", [])
+
+    risky = il.compute_diff("Rotate the admin password every 30 days.",
+                            "Rotate the admin password every 90 days.", "a", "b")
+    level, reasons = il.assess_risk(risky)
+    assert level == "high"
+    assert any("numeric" in r for r in reasons)
+    assert any("admin" in r and "password" in r for r in reasons)
+
+    enc = il.compute_diff("Data is stored.", "Data is encrypted and stored.", "a", "b")
+    assert il.assess_risk(enc)[0] == "high"  # stem match: encrypted
+
+
+def test_web_url_validation(db):
+    for bad in ("file:///etc/passwd", "ftp://host/x", "http://169.254.169.254/latest/meta-data/"):
+        r = il.process_incoming_source("web", bad, "senior", "employee", db_path=db)
+        assert r["status_code"] == 400, bad
+
+
+def test_uploader_and_department_recorded(tmp_path, db):
+    v1 = make_pdf(tmp_path / "v1.pdf", BASE_LINES)
+    v2 = make_pdf(tmp_path / "v2.pdf", _delta_lines())
+    first = il.process_incoming_source("pdf", v1, "senior", "developer", db_path=db,
+                                       uploader_id="u-senior", department="engineering")
+    assert first["chunks"][0]["department"] == "engineering"
+
+    staged = il.process_incoming_source("pdf", v2, "junior", "developer", db_path=db,
+                                        uploader_id="u-junior", department="engineering")
+    pending = il.list_pending_updates(db)[0]
+    assert (pending["uploader_id"], pending["department"]) == ("u-junior", "engineering")
+
+    ok = il.review_staged_update(staged["staged_id"], "senior", True, reviewer="u-senior", db_path=db)
+    assert ok["chunks"][0]["department"] == "engineering"
+    with sqlite3.connect(db) as conn:
+        who = conn.execute("SELECT uploader_id FROM processed_docs WHERE status='active'").fetchone()[0]
+    assert who == "u-junior"
+
+
+def test_old_registry_is_migrated(tmp_path):
+    db = str(tmp_path / "old.db")
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE processed_docs (doc_hash TEXT PRIMARY KEY, source TEXT NOT NULL, "
+                     "source_type TEXT NOT NULL, min_role TEXT NOT NULL, uploader_role TEXT NOT NULL, "
+                     "status TEXT NOT NULL, raw_text TEXT NOT NULL, minhash BLOB NOT NULL, "
+                     "parent_hash TEXT, superseded_by TEXT, chunk_count INTEGER NOT NULL DEFAULT 0, "
+                     "timestamp TEXT NOT NULL)")
+    il.init_db(db)
+    with sqlite3.connect(db) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(processed_docs)")}
+    assert {"department", "uploader_id"} <= cols
+
+
+def test_pending_update_leaves_current_version_live(tmp_path, db):
+    v1 = make_pdf(tmp_path / "v1.pdf", BASE_LINES)
+    v2 = make_pdf(tmp_path / "v2.pdf", _delta_lines())
+    orig = il.process_incoming_source("pdf", v1, "senior", "developer", db_path=db)
+    il.process_incoming_source("pdf", v2, "junior", "developer", db_path=db)
+    with sqlite3.connect(db) as conn:
+        rows = dict(conn.execute("SELECT doc_hash, status FROM processed_docs"))
+    assert rows == {orig["doc_hash"]: "active"}   # nothing new live, nothing deprecated
+
+
+def test_rejections_flag_account_and_source(tmp_path, db):
+    il.process_incoming_source("pdf", make_pdf(tmp_path / "base.pdf", BASE_LINES), "senior", "dev",
+                               db_path=db, department="engineering")
+    last = None
+    for n in range(il.FLAG_THRESHOLD):
+        lines = list(BASE_LINES)
+        lines[0] = f"Section 1: attempt {n} changes the admin port to {8000 + n}."
+        r = il.process_incoming_source("pdf", make_pdf(tmp_path / f"bad{n}.pdf", lines), "junior",
+                                       "dev", db_path=db, uploader_id="mallory",
+                                       department="engineering")
+        assert r["status"] == "pending_approval"
+        last = il.review_staged_update(r["staged_id"], "senior", False, db_path=db, note="suspicious")
+        assert last["audit_alert"] is True
+    # three different files -> the account hits the threshold, no single source does
+    assert {(f["kind"], f["flagged"]) for f in last["flags"]} == {("account", True), ("source", False)}
+    flagged = {(f["kind"], f["key"]) for f in il.list_flags(db)}
+    assert ("account", "mallory") in flagged
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT review_note FROM staged_updates LIMIT 1").fetchone()[0] == "suspicious"
+
+
+def test_one_rejection_is_not_yet_flagged(tmp_path, db):
+    il.process_incoming_source("pdf", make_pdf(tmp_path / "base.pdf", BASE_LINES), "senior", "dev", db_path=db)
+    r = il.process_incoming_source("pdf", make_pdf(tmp_path / "v2.pdf", _delta_lines()), "junior", "dev",
+                                   db_path=db, uploader_id="newbie")
+    rej = il.review_staged_update(r["staged_id"], "senior", False, db_path=db)
+    assert all(not f["flagged"] for f in rej["flags"])
+    assert il.list_flags(db) == []
+
+
+def test_review_queue_filters_by_department_and_orders_by_risk(tmp_path, db):
+    il.process_incoming_source("pdf", make_pdf(tmp_path / "e.pdf", BASE_LINES), "senior", "dev",
+                               db_path=db, department="engineering")
+    other = [f"Kubernetes cluster {i} autoscaling guidance for staging namespace workloads." for i in range(40)]
+    il.process_incoming_source("pdf", make_pdf(tmp_path / "s.pdf", other), "senior", "dev",
+                               db_path=db, department="support")
+    quiet = [l.replace("nightly", "daily").replace("reconciles", "checks") if i % 2 == 0 else l
+             for i, l in enumerate(BASE_LINES)]
+    il.process_incoming_source("pdf", make_pdf(tmp_path / "q.pdf", quiet), "junior", "dev",
+                               db_path=db, department="engineering")
+    il.process_incoming_source("pdf", make_pdf(tmp_path / "r.pdf", _delta_lines()), "junior", "dev",
+                               db_path=db, department="engineering")
+    queue = il.list_pending_updates(db, department="engineering")
+    assert [q["risk_level"] for q in queue] == ["high", "normal"]
+    assert il.list_pending_updates(db, department="support") == []

@@ -144,3 +144,32 @@ def test_cli_reports_that_environment_keys_cannot_be_rotated(tmp_path, monkeypat
     assert "environment variable" in capsys.readouterr().err
     cli.main(["keys"])
     assert "from environment" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------ generated demo accounts
+def test_seed_demo_generate_creates_unique_private_passwords_and_prints_none(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ALEXANDRIA_SECRETS", str(tmp_path / "sec"))
+    monkeypatch.setenv("ALEXANDRIA_DB", str(tmp_path / "t.db"))
+    for name in ("ALEXANDRIA_JWT_SECRET", "ALEXANDRIA_FERNET_KEY", "ALEXANDRIA_LEDGER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert cli.main(["seed-demo", "--generate"]) == 0
+    out = capsys.readouterr()
+    creds = (tmp_path / "sec" / "demo-accounts.txt")
+    assert stat.S_IMODE(os.stat(creds).st_mode) == 0o600
+    rows = [l.split()[:2] for l in creds.read_text().splitlines() if l and not l.startswith("#")]
+    assert len(rows) == 10 and len({pw for _, pw in rows}) == 10 and all(len(pw) >= 16 for _, pw in rows)
+    for _, pw in rows:
+        assert pw not in out.out and pw not in out.err                      # never printed
+
+    from app import security
+    from app.store import Store
+    st = Settings()
+    store = Store(st.db_path, st.cipher)
+    users = {u["username"]: u for u in store.list_users()}
+    assert len(users) == 10 and users["developer"]["manager_id"] == users["senior_eng"]["id"]
+    assert users["senior_eng"]["manager_id"] == users["admin"]["id"] and users["admin"]["manager_id"] is None
+    for name, pw in rows:                                                    # each password opens exactly its own account
+        assert security.verify_password(users[name]["password_hash"], pw)
+    other = next(n for n, _ in rows if n != rows[0][0])
+    assert not security.verify_password(users[other]["password_hash"], rows[0][1])
+    assert cli.main(["seed-demo", "--generate"]) == 1                        # never re-seeds an existing organisation

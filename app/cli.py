@@ -15,6 +15,39 @@ from .config import Settings
 from .store import Store
 
 
+# (username, role, manager's username): two seniors per department so the four-eyes rule can be exercised
+DEMO_ORG = [
+    ("admin", "security_admin", None),
+    ("senior_eng", "senior_eng", "admin"), ("senior_eng2", "senior_eng", "admin"),
+    ("support_lead", "support_lead", "admin"), ("support_lead2", "support_lead", "admin"),
+    ("developer", "developer", "senior_eng"), ("support_rep", "support_rep", "support_lead"),
+    ("pm", "product_manager", "admin"), ("legal", "legal_counsel", "admin"), ("exec", "executive", "admin"),
+]
+
+
+def _seed_generated(store: Store, settings: Settings, prefix: str, out: Path) -> int:
+    """Create the demo organisation with a unique random password per account. The passwords go to a
+    private file (owner-only) and are never printed, so they don't end up in a terminal or a log."""
+    import secrets as _secrets
+    if store.list_users():
+        print("refusing to seed: users already exist", file=sys.stderr)
+        return 1
+    out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ids, lines = {}, []
+    for name, role, mgr in DEMO_ORG:
+        pw = _secrets.token_urlsafe(14)                              # ~19 characters, far above the 12 minimum
+        row = store.create_user(prefix + name, security.hash_password(pw), role, manager_id=ids.get(mgr))
+        ids[name] = row["id"]
+        lines.append(f"{prefix + name:<16} {pw}   ({role})")
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write("# Alexandria demo accounts: username, password, role. Keep private; share each password only with its user.\n"
+                 "# Every account sets up two-factor authentication on its first sign-in, so sign in to each one\n"
+                 "# yourself before handing the password to anyone else.\n" + "\n".join(lines) + "\n")
+    print(f"created {len(DEMO_ORG)} accounts; passwords are in {out} (owner-only). Nothing was printed.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="app.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -24,6 +57,10 @@ def main(argv=None) -> int:
     cu.add_argument("--manager", help="username of this user's manager")
     sd = sub.add_parser("seed-demo", help="one user per role, reporting up a demo org chart")
     sd.add_argument("--prefix", default="")
+    sd.add_argument("--generate", action="store_true",
+                    help="give every account its own random password and write them to a private file "
+                         "(nothing is printed, nothing is asked)")
+    sd.add_argument("--out", help="where --generate writes the credentials (default: .secrets/demo-accounts.txt)")
     sub.add_parser("keys", help="show the key ids in each keyring")
     rk = sub.add_parser("rotate-keys", help="rotate a secret key without downtime")
     rk.add_argument("which", choices=["jwt", "fernet", "ledger", "authority"])
@@ -63,6 +100,10 @@ def main(argv=None) -> int:
         return 0
 
     store = Store(settings.db_path, settings.cipher)
+
+    if args.cmd == "seed-demo" and args.generate:
+        return _seed_generated(store, settings, args.prefix, Path(args.out) if args.out else settings.secrets_dir / "demo-accounts.txt")
+
     pw = getpass.getpass(f"Password (min {settings.min_password_length} chars): ")
     if len(pw) < settings.min_password_length:
         print("password too short", file=sys.stderr)

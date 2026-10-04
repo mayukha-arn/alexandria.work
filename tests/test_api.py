@@ -351,3 +351,11 @@ def test_meta_lists_what_forms_need_and_requires_a_session(env):
     assert {r["name"] for r in m["roles"]} >= {"developer", "senior_eng", "security_admin"}
     assert "approve_doc" in m["capabilities"] and "chat" in m["capabilities"]
     assert client.get("/meta").status_code == 401
+
+
+def test_interactive_docs_can_be_switched_off_for_a_public_deployment(tmp_path):
+    on = TestClient(create_app(Settings(db_path=str(tmp_path / "a.db"), secrets_dir=tmp_path / "s1")))
+    assert on.get("/docs").status_code == 200
+    off = TestClient(create_app(Settings(db_path=str(tmp_path / "b.db"), secrets_dir=tmp_path / "s2", expose_docs=False)))
+    assert off.get("/docs").status_code == 404 and off.get("/openapi.json").status_code == 404
+    assert off.get("/health").status_code == 200

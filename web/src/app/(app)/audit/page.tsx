@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { ExternalLink } from "lucide-react";
-import { API, api, ApiError, type LedgerRow } from "@/lib/api";
+import { apiBase, api, ApiError, type LedgerRow } from "@/lib/api";
 import { explorerUrl, fmtTime } from "@/lib/format";
 import { Badge, Empty, ErrorBanner, Notice, Page, Redacted } from "@/components/ui";
 
@@ -63,7 +63,7 @@ export default function AuditPage() {
                   <td>{r.redacted ? <Redacted text={r.action} /> : <Badge>{r.action}</Badge>}</td>
                   <td className="max-w-xs">{r.redacted ? <Redacted text={String(r.payload)} /> : <details><summary className="cursor-pointer truncate font-mono text-xs text-mute">{JSON.stringify(r.payload)}</summary><pre className="mt-1 whitespace-pre-wrap break-all font-mono text-xs">{JSON.stringify(r.payload, null, 2)}</pre></details>}</td>
                   <td><Badge tone={r.redacted ? "bad" : "neutral"}>{r.required_clearance}</Badge></td>
-                  <td className="whitespace-nowrap">{r.tx_signature ? <a className="inline-flex items-center gap-1 text-xs text-brand underline" href={explorerUrl(r.tx_signature, API)} target="_blank" rel="noreferrer">{r.tx_signature.slice(0, 8)}… <ExternalLink size={12} /></a> : <Badge tone={r.anchored ? "good" : "warn"}>{r.anchored ? "recorded" : "queued"}</Badge>}</td>
+                  <td className="whitespace-nowrap">{r.tx_signature ? <a className="inline-flex items-center gap-1 text-xs text-brand underline" href={explorerUrl(r.tx_signature, apiBase())} target="_blank" rel="noreferrer">{r.tx_signature.slice(0, 8)}… <ExternalLink size={12} /></a> : <Badge tone={r.anchored ? "good" : "warn"}>{r.anchored ? "recorded" : "queued"}</Badge>}</td>
                 </tr>
               ))}
             </tbody>

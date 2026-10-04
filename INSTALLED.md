@@ -22,6 +22,13 @@ All installs are user-level (no sudo) unless noted. Disk figures are approximate
 | 2026-10-03 | Web app dependencies (`npm install`: next 14, react 18, tailwind, qrcode, tweetnacl, bs58, lucide-react, vitest, @playwright/test) | see `web/package.json` | `~/alexandria/web/node_modules` (~344 MB, gitignored) | The Next.js frontend | `rm -rf web/node_modules` (reinstall with `npm install --cache /tmp/npm-cache`) |
 | 2026-10-03 | Playwright Chromium headless shell | 153 (v1243) | `~/Library/Caches/ms-playwright` (~94 MB) | Real-browser end-to-end tests | `rm -rf ~/Library/Caches/ms-playwright` |
 | 2026-10-03 | Static site build `web/out` and `web/.next` (gitignored) | n/a | `~/alexandria/web` | Build output | `rm -rf web/out web/.next` |
+| 2026-10-04 | cloudflared (Cloudflare quick tunnel) | 2026.9.3 | `~/.local/bin/cloudflared` (~20 MB) | Public address for the API running on this Mac (no account) | `rm ~/.local/bin/cloudflared` |
+| 2026-10-04 | Azure Static Web Apps CLI (run via `npx`, not installed) + its deploy client | latest | npm cache + `~/.swa` | Upload the built site to Azure | `rm -rf ~/.swa` |
+
+**Azure resources created (subscription "Azure for Students", rm2289@njit.edu), 2026-10-04:**
+resource group `alexandria-rg` (westus2) containing Static Web App `alexandria-gh-web` (Free tier, $0) at
+`purple-hill-0222aa91e.1.azurestaticapps.net`. Remove everything with `az group delete -n alexandria-rg`.
+Providers registered earlier: Microsoft.Compute, .Web, .App, .OperationalInsights, .KeyVault.
 
 PATH additions needed in a shell (not written to any dotfile):
 `export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.azure-cli-venv/bin:$PATH"`

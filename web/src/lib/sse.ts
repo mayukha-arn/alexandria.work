@@ -1,5 +1,5 @@
 // Server-sent events over fetch (EventSource cannot send an Authorization header).
-import { API, ApiError, getToken } from "./api";
+import { apiBase, ApiError, getToken } from "./api";
 
 export type SseEvent = { event: string; data: any };
 
@@ -29,7 +29,7 @@ export function parseSse(buffer: string): { events: SseEvent[]; rest: string } {
 export async function streamPost(path: string, body: unknown, onEvent: (e: SseEvent) => void, signal?: AbortSignal): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(`${API}${path}`, {
+    res = await fetch(`${apiBase()}${path}`, {
       method: "POST", signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken() ?? ""}` },
       body: JSON.stringify(body),

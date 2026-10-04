@@ -1,7 +1,12 @@
 // Thin typed client for the Alexandria API. The access token lives in memory (and sessionStorage so a
 // reload keeps you signed in); it is never put in a URL.
 
-export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+/** Where the API lives. Read at run time from /config.js (so a deployed site can be re-pointed without a
+ *  rebuild), falling back to the build-time NEXT_PUBLIC_API_URL, then to localhost. */
+export const apiBase = (): string => {
+  const w = typeof window !== "undefined" ? (window as unknown as { ALEXANDRIA_CONFIG?: { apiUrl?: string } }) : undefined;
+  return (w?.ALEXANDRIA_CONFIG?.apiUrl || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8088").replace(/\/+$/, "");
+};
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: string) {
@@ -34,7 +39,7 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
   }
   let res: Response;
   try {
-    res = await fetch(`${API}${path}`, { method: opts.method ?? (body ? "POST" : "GET"), headers, body });
+    res = await fetch(`${apiBase()}${path}`, { method: opts.method ?? (body ? "POST" : "GET"), headers, body });
   } catch {
     throw new ApiError(0, "Cannot reach the Alexandria server. Is it running?");
   }

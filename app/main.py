@@ -163,7 +163,9 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         stop.set()
 
     messaging = Messaging(store, hub, llm=llm, docs=docs)
-    app = FastAPI(title="Alexandria", docs_url="/docs", lifespan=lifespan)
+    # The interactive API docs list every endpoint: handy locally, not something to publish.
+    app = FastAPI(title="Alexandria", lifespan=lifespan, openapi_url="/openapi.json" if settings.expose_docs else None,
+                  docs_url="/docs" if settings.expose_docs else None, redoc_url=None)
     # Bearer tokens, not cookies, so no credentialed cross-site requests: only the listed web origins may read responses.
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=False,
                        allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Authorization", "Content-Type"])

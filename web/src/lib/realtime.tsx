@@ -1,6 +1,6 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { API, api, getToken, setToken } from "./api";
+import { apiBase, api, getToken, setToken } from "./api";
 
 export type RtEvent = { type: string; [k: string]: any };
 type Handler = (e: RtEvent) => void;
@@ -35,7 +35,7 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
     const connect = () => {
       if (stopped) return;
       setStatus("connecting");
-      ws = new WebSocket(API.replace(/^http/, "ws") + "/ws");
+      ws = new WebSocket(apiBase().replace(/^http/, "ws") + "/ws");
       ws.onopen = () => ws?.send(JSON.stringify({ type: "auth", token: getToken() }));
       ws.onmessage = (m) => {
         const ev = JSON.parse(m.data) as RtEvent;

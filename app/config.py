@@ -26,6 +26,7 @@ class Settings:
     challenge_ttl: int = 5 * 60     # wallet signature challenge
     lock_after: int = 5             # consecutive failures
     lock_seconds: int = 5 * 60
+    expose_docs: bool = field(default_factory=lambda: os.getenv("ALEXANDRIA_DOCS", "1") != "0")   # set 0 when public
     session_max_seconds: int = 8 * 3600   # a session can be refreshed, but never past this
     cors_origins: List[str] = field(default_factory=lambda: [o.strip() for o in os.getenv(
         "ALEXANDRIA_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()])

@@ -174,3 +174,11 @@ def test_keyword_index_persists_across_restarts(tmp_path):
     s2 = VectorStore(HashingEmbedder(), path=p, collection="persist")
     assert [h.doc_hash for h in s2.query("ERR-9001", 100, mode="keyword")] == ["a"]
     assert s2.count() == 1
+
+
+def test_chroma_usage_statistics_are_switched_off(tmp_path):
+    """The product promises nothing leaves the machine; ChromaDB's anonymous telemetry is on by default."""
+    import chromadb
+    store = VectorStore(HashingEmbedder(), path=str(tmp_path / "db"), collection="quiet")
+    settings = store.col._client.get_settings() if hasattr(store.col._client, "get_settings") else store.col._client._system.settings
+    assert settings.anonymized_telemetry is False

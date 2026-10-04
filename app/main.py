@@ -33,6 +33,7 @@ from .messaging import Messaging, MsgError
 from .realtime import Hub
 from .rag import InputBlocked, ask as rag_ask, ask_stream, prepare as rag_prepare
 from .redaction import render_event
+from .telemetry import SECURITY_EVENTS, Telemetry
 from .verify import verify_document
 from .config import Settings
 from .store import Store
@@ -130,11 +131,14 @@ class AskBody(BaseModel):
 
 
 def create_app(settings: Optional[Settings] = None, chain: Any = None,
-               anchor_interval: float = 10.0, vectors: Any = None, llm: Any = None) -> FastAPI:
+               anchor_interval: float = 10.0, vectors: Any = None, llm: Any = None,
+               telemetry: Optional[Telemetry] = None) -> FastAPI:
     """``chain`` is a SolanaChain (or MemoryChain in tests). With one, a background loop
     anchors the audit outbox; without one, events simply queue until a chain is configured."""
     settings = settings or Settings()
+    telemetry = telemetry or Telemetry(os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"))   # off unless configured
     store = Store(settings.db_path, settings.cipher)
+    store.listeners.append(lambda kind, dept: telemetry.event(kind, {"department": dept}) if kind in SECURITY_EVENTS else None)
     hasher = Hasher(settings.ledger_keys)
     stop = threading.Event()
     hub = Hub(lambda uid: (lambda row: Store.as_role_user(row) if row else None)(store.get_user(uid)))
@@ -147,7 +151,7 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         while not stop.wait(anchor_interval):
             try:
                 if chain is not None:
-                    anchor_pending(store, chain, hasher)
+                    anchor_pending(store, chain, hasher, telemetry=telemetry)
                 if docs is not None:
                     docs.reindex_unindexed()
             except Exception:  # never let the loop die
@@ -161,6 +165,7 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
             thread.start()
         yield
         stop.set()
+        telemetry.close()
 
     messaging = Messaging(store, hub, llm=llm, docs=docs)
     # The interactive API docs list every endpoint: handy locally, not something to publish.
@@ -171,7 +176,21 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
                        allow_methods=["GET", "POST", "PUT", "DELETE"], allow_headers=["Authorization", "Content-Type"])
     app.state.settings, app.state.store, app.state.chain, app.state.hasher = settings, store, chain, hasher
     app.state.vectors, app.state.llm, app.state.docs = vectors, llm, docs
-    app.state.hub, app.state.messaging = hub, messaging
+    app.state.hub, app.state.messaging, app.state.telemetry = hub, messaging, telemetry
+
+    @app.middleware("http")
+    async def time_requests(request: Request, call_next):
+        start = time.perf_counter()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            route = request.scope.get("route")
+            template = getattr(route, "path", None)          # "/pings/{ping_id}", never the real id
+            if template and template != "/health":
+                telemetry.request(f"{request.method} {template}", (time.perf_counter() - start) * 1000, status)
 
     @contextmanager
     def msg_errors():
@@ -629,7 +648,8 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
             raise HTTPException(503, "the knowledge engine is not configured")
         try:
             a = rag_ask(question=body.question, user=actor, store=store, vectors=vectors, llm=llm,
-                        registry_path=settings.registry_path, chain=chain)
+                        registry_path=settings.registry_path, chain=chain, k=settings.top_k,
+                        context_chars=settings.context_chars, telemetry=telemetry)
         except InputBlocked:
             # The reasons are audited but not echoed: telling an attacker which rule fired helps them iterate.
             raise HTTPException(400, "Your question was blocked by the security policy.")
@@ -649,7 +669,8 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
             raise HTTPException(503, "the knowledge engine is not configured")
         try:   # everything that can fail before the first byte is sent maps to a normal HTTP error
             prep = rag_prepare(question=body.question, user=actor, store=store, vectors=vectors,
-                               registry_path=settings.registry_path, chain=chain)
+                               registry_path=settings.registry_path, chain=chain, k=settings.top_k,
+                               context_chars=settings.context_chars, telemetry=telemetry)
         except InputBlocked:
             raise HTTPException(400, "Your question was blocked by the security policy.")
 

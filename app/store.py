@@ -78,6 +78,7 @@ class Store:
         self.db_path = db_path
         # Event payloads hold the plaintext behind on-chain hashes: encrypt them at rest.
         self._cipher = cipher
+        self.listeners: List[Any] = []     # called as listener(kind, department) after an event is recorded
         with closing(sqlite3.connect(db_path)) as conn:
             conn.executescript(SCHEMA)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(events)")}
@@ -211,9 +212,16 @@ class Store:
             ).lastrowid
 
         if conn is not None:
-            return _do(conn)
-        with self.tx() as c:
-            return _do(c)
+            eid = _do(conn)
+        else:
+            with self.tx() as c:
+                eid = _do(c)
+        for listener in self.listeners:
+            try:
+                listener(kind, department)
+            except Exception:
+                pass                                   # an observer must never break the action it observes
+        return eid
 
     def seal(self, body: str) -> str:
         return self._seal(body)

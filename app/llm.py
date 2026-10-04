@@ -77,16 +77,18 @@ class Completion:
     completion_tokens: Optional[int] = None
 
 
-class OllamaLLM:
-    def __init__(self, base_url: str = "http://127.0.0.1:11434", model: str = "llama3:8b",
-                 temperature: float = 0.2, timeout: float = 180.0) -> None:
-        self.url, self.model, self.temperature, self.timeout = base_url.rstrip("/"), model, temperature, timeout
+class TokenStream:
+    """Iterate to receive text pieces; once exhausted, ``usage`` holds the model's token counts."""
 
-    def stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+    def __init__(self, llm: "OllamaLLM", messages: List[Dict[str, str]]) -> None:
+        self.llm, self.messages, self.usage = llm, messages, {}
+
+    def __iter__(self) -> Iterator[str]:
         import json
-        with requests.post(f"{self.url}/api/chat", stream=True, timeout=self.timeout, json={
-            "model": self.model, "messages": messages, "stream": True,
-            "options": {"temperature": self.temperature},
+        llm = self.llm
+        with requests.post(f"{llm.url}/api/chat", stream=True, timeout=llm.timeout, json={
+            "model": llm.model, "messages": self.messages, "stream": True,
+            "options": {"temperature": llm.temperature},
         }) as r:
             r.raise_for_status()
             for line in r.iter_lines():
@@ -96,15 +98,28 @@ class OllamaLLM:
                 if part.get("message", {}).get("content"):
                     yield part["message"]["content"]
                 if part.get("done"):
+                    self.usage = {"prompt_tokens": part.get("prompt_eval_count"),
+                                  "completion_tokens": part.get("eval_count")}
                     return
+
+
+class OllamaLLM:
+    def __init__(self, base_url: str = "http://127.0.0.1:11434", model: str = "llama3:8b",
+                 temperature: float = 0.2, timeout: float = 180.0) -> None:
+        self.url, self.model, self.temperature, self.timeout = base_url.rstrip("/"), model, temperature, timeout
+
+    def stream(self, messages: List[Dict[str, str]]) -> "TokenStream":
+        return TokenStream(self, messages)
 
     def complete(self, messages: List[Dict[str, str]]) -> Completion:
         start, first, parts = time.perf_counter(), None, []
-        for tok in self.stream(messages):
+        ts = self.stream(messages)
+        for tok in ts:
             if first is None:
                 first = (time.perf_counter() - start) * 1000
             parts.append(tok)
-        return Completion("".join(parts), first, (time.perf_counter() - start) * 1000)
+        return Completion("".join(parts), first, (time.perf_counter() - start) * 1000,
+                          ts.usage.get("prompt_tokens"), ts.usage.get("completion_tokens"))
 
 
 class ScriptedLLM:

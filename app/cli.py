@@ -97,6 +97,14 @@ def main(argv=None) -> int:
             print(f"rotation failed: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(out, indent=2))
+        if os.getenv("ALEXANDRIA_KEYVAULT_URL"):          # keep the vault (the source of truth) in step with the rotation
+            from . import azure_secrets
+            try:
+                names = azure_secrets.push(azure_secrets.KeyVault(os.environ["ALEXANDRIA_KEYVAULT_URL"]), settings.secrets_dir)
+                print(f"key vault updated: {', '.join(names) or 'nothing changed'}")
+            except azure_secrets.VaultError as exc:
+                print(f"WARNING: rotated locally but could not update Key Vault: {exc}", file=sys.stderr)
+                return 1
         return 0
 
     store = Store(settings.db_path, settings.cipher)

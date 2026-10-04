@@ -92,7 +92,10 @@ class VectorStore:
     def __init__(self, embedder: Embedder, path: Optional[str] = "./chroma_db",
                  collection: str = COLLECTION) -> None:
         self.embedder = embedder
-        client = chromadb.PersistentClient(path=path) if path else chromadb.EphemeralClient()
+        # ChromaDB phones home anonymous usage statistics by default; this system promises that nothing leaves.
+        quiet = chromadb.Settings(anonymized_telemetry=False)
+        client = (chromadb.PersistentClient(path=path, settings=quiet) if path
+                  else chromadb.EphemeralClient(settings=quiet))
         # Cosine distance; we always supply our own embeddings.
         self.col = client.get_or_create_collection(collection, metadata={"hnsw:space": "cosine"},
                                                    embedding_function=None)

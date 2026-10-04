@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 from typing import Any, Dict, Optional, Union
 
 from .chain import ChainError, ProgramError
@@ -68,22 +69,29 @@ def anchor_event(chain: Any, hasher: Hasher, event: Dict[str, Any], kid: Optiona
     return chain.log_event(actor, action, payload_hash, dept, clearance, approver).signature
 
 
-def anchor_pending(store: Any, chain: Any, hasher: Hasher, limit: int = 50) -> Dict[str, int]:
+def anchor_pending(store: Any, chain: Any, hasher: Hasher, limit: int = 50, telemetry: Any = None) -> Dict[str, int]:
     """Anchor queued events oldest-first. An outage stops the run (order is kept, nothing
     is lost: the rest stay queued). A permanent rejection is recorded and skipped so one bad
     event cannot block the ledger forever."""
     done = failed = 0
     kid = hasher.current_kid                        # fixed for the whole run, even if a rotation lands mid-run
     for ev in store.pending_events(limit):
+        t0 = time.perf_counter()
         try:
             sig = anchor_event(chain, hasher, ev, kid)
         except ChainError as exc:
             log.warning("chain unavailable, %s event(s) left queued: %s", "remaining", exc)
+            if telemetry is not None:
+                telemetry.event("SOLANA_UNAVAILABLE")
             break
         except ProgramError as exc:
             store.mark_anchor_error(ev["id"], str(exc))
+            if telemetry is not None:
+                telemetry.event("SOLANA_REJECTED", {"kind": ev["kind"]})
             failed += 1
             continue
+        if telemetry is not None:
+            telemetry.metric("solana_confirm_s", time.perf_counter() - t0)
         store.mark_anchored(ev["id"], sig, kid)
         done += 1
     return {"anchored": done, "rejected": failed}

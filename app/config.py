@@ -30,6 +30,9 @@ class Settings:
     session_max_seconds: int = 8 * 3600   # a session can be refreshed, but never past this
     cors_origins: List[str] = field(default_factory=lambda: [o.strip() for o in os.getenv(
         "ALEXANDRIA_CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()])
+    # Prompt size controls (CPU-only hosts read prompts slowly: fewer / shorter excerpts mean a faster first word).
+    top_k: int = field(default_factory=lambda: int(os.getenv("ALEXANDRIA_TOP_K", "5")))
+    context_chars: int = field(default_factory=lambda: int(os.getenv("ALEXANDRIA_CONTEXT_CHARS", "0")))   # 0 = no cap
     min_password_length: int = 12
     # Four-eyes: every document, whoever uploads it, needs one approval from a different person
     # before it goes live. ALEXANDRIA_REQUIRE_APPROVAL=0 restores the PRD's senior auto-approve.

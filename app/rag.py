@@ -54,10 +54,28 @@ class Prepared:
     hits: List[Any]
     warnings: List[str]
     status_by_doc: Dict[str, str]
+    search_ms: float = 0.0
+    telemetry: Any = None
+
+
+def trim_context(hits: List[Any], max_chars: int) -> List[Any]:
+    """Keep the best-ranked excerpts that fit a character budget (0 = no cap). Always keeps at least one,
+    shortening it if it alone is over budget. A smaller prompt means a faster first word on a slow CPU."""
+    if not max_chars or not hits:
+        return hits
+    kept, used = [], 0
+    for h in hits:
+        if used + len(h.text) <= max_chars:
+            kept.append(h)
+            used += len(h.text)
+        elif not kept:
+            kept.append(type(h)(**{**h.__dict__, "text": h.text[:max_chars]}))
+            break
+    return kept
 
 
 def prepare(*, question: str, user: R.User, store: Store, vectors: Any, registry_path: str,
-            chain: Any = None, k: int = 5) -> Prepared:
+            chain: Any = None, k: int = 5, context_chars: int = 0, telemetry: Any = None) -> Prepared:
     """Input guardrail -> clearance-filtered retrieval -> tamper check. Raises InputBlocked."""
     verdict = guardrails.check_input(question)
     if verdict.blocked:
@@ -66,7 +84,9 @@ def prepare(*, question: str, user: R.User, store: Store, vectors: Any, registry
                            department=user.department, min_clearance=50)
         raise InputBlocked(verdict.reasons)
 
+    t0 = time.perf_counter()
     hits = vectors.query(question, user.effective_clearance, k)   # access filter applied inside the databases
+    search_ms = (time.perf_counter() - t0) * 1000
     warnings: List[str] = []
     status_by_doc: Dict[str, str] = {}
     # Tamper check: never show the model text whose registered hash no longer matches, and flag
@@ -86,7 +106,8 @@ def prepare(*, question: str, user: R.User, store: Store, vectors: Any, registry
             hits = [h for h in hits if h.doc_hash not in tampered]
         if any(status_by_doc.get(h.doc_hash) in ("unanchored", "unchecked") for h in hits):
             warnings.append("Some sources are not yet verified on-chain.")
-    return Prepared(question, user, user.role_def.persona, hits, warnings, status_by_doc)
+    hits = trim_context(hits, context_chars)
+    return Prepared(question, user, user.role_def.persona, hits, warnings, status_by_doc, search_ms, telemetry)
 
 
 def messages_for(prep: Prepared) -> List[Dict[str, str]]:
@@ -114,6 +135,19 @@ def finish(prep: Prepared, raw_text: str, store: Store, metrics: Optional[Dict[s
                     "verification": prep.status_by_doc.get(hits[i - 1].doc_hash)} for i in used]
 
     text = guardrails.mask_pii(text)
+    if prep.telemetry is not None:                      # numbers and the department name only: never the text
+        m, dept = metrics, prep.user.department
+        prep.telemetry.event("ANSWER", {"department": dept, "persona": prep.persona, "grounded": grounded},
+                             {k: v for k, v in {"search_ms": prep.search_ms, "ttft_ms": m.get("ttft_ms"), "total_ms": m.get("total_ms"),
+                                                "retrieved": m.get("retrieved"), "sources_cited": len(sources),
+                                                "prompt_tokens": m.get("prompt_tokens"), "completion_tokens": m.get("completion_tokens")}.items() if v is not None})
+        prep.telemetry.metric("vector_search_ms", prep.search_ms, {"department": dept})
+        for key in ("ttft_ms", "total_ms"):
+            if m.get(key) is not None:
+                prep.telemetry.metric(f"answer_{key}", m[key], {"department": dept})
+        for key in ("prompt_tokens", "completion_tokens"):
+            if m.get(key) is not None:
+                prep.telemetry.metric(f"tokens_{key}", m[key], {"department": dept})   # token consumption per department
     prep_user = prep.user
     store.record_event("QUERY", prep_user.id, None,
                        {"question_hash": _sha(prep.question), "answer_hash": _sha(text),
@@ -123,13 +157,14 @@ def finish(prep: Prepared, raw_text: str, store: Store, metrics: Optional[Dict[s
 
 
 def ask(*, question: str, user: R.User, store: Store, vectors: Any, llm: Any, registry_path: str,
-        chain: Any = None, k: int = 5) -> Answer:
-    prep = prepare(question=question, user=user, store=store, vectors=vectors,
-                   registry_path=registry_path, chain=chain, k=k)
+        chain: Any = None, k: int = 5, context_chars: int = 0, telemetry: Any = None) -> Answer:
+    prep = prepare(question=question, user=user, store=store, vectors=vectors, registry_path=registry_path,
+                   chain=chain, k=k, context_chars=context_chars, telemetry=telemetry)
     if not prep.hits:
         return finish(prep, "", store)
     done = llm.complete(messages_for(prep))
-    return finish(prep, done.text, store, {"ttft_ms": done.ttft_ms, "total_ms": done.total_ms})
+    return finish(prep, done.text, store, {"ttft_ms": done.ttft_ms, "total_ms": done.total_ms,
+                                           "prompt_tokens": done.prompt_tokens, "completion_tokens": done.completion_tokens})
 
 
 def ask_stream(prep: Prepared, llm: Any, store: Store) -> Iterator[Dict[str, Any]]:
@@ -148,8 +183,9 @@ def ask_stream(prep: Prepared, llm: Any, store: Store) -> Iterator[Dict[str, Any
         return
 
     masker, raw, start, first, sent = guardrails.StreamMasker(), [], time.perf_counter(), None, False
+    stream = llm.stream(messages_for(prep))
     try:
-        for piece in llm.stream(messages_for(prep)):
+        for piece in stream:
             if first is None:
                 first = (time.perf_counter() - start) * 1000
             raw.append(piece)
@@ -165,7 +201,9 @@ def ask_stream(prep: Prepared, llm: Any, store: Store) -> Iterator[Dict[str, Any
     except requests.RequestException:
         yield {"event": "error", "data": {"detail": "the language model is unavailable; try again shortly"}}
         return
-    ans = finish(prep, "".join(raw), store, {"ttft_ms": first, "total_ms": (time.perf_counter() - start) * 1000})
+    usage = getattr(stream, "usage", None) or {}
+    ans = finish(prep, "".join(raw), store, {"ttft_ms": first, "total_ms": (time.perf_counter() - start) * 1000,
+                                             "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens")})
     yield {"event": "done", "data": _answer_json(ans)}
 
 

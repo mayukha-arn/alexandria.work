@@ -11,8 +11,8 @@ install -d -o alexapi -g alexapi -m 700 /var/lib/alexandria
 install -d -m 755 /etc/alexandria /opt/alexandria
 
 echo "== code"
-if [ -d /opt/alexandria/.git ]; then git -C /opt/alexandria pull --ff-only -q; else git clone -q "$REPO" /opt/alexandria; fi
-echo "at $(git -C /opt/alexandria rev-parse --short HEAD)"
+if [ -d /opt/alexandria/.git ]; then git -c safe.directory=/opt/alexandria -C /opt/alexandria pull --ff-only -q; else git clone -q "$REPO" /opt/alexandria; fi
+echo "at $(git -c safe.directory=/opt/alexandria -C /opt/alexandria rev-parse --short HEAD)"
 
 echo "== python environment"
 [ -x /opt/alexandria/.venv/bin/python ] || python3 -m venv /opt/alexandria/.venv

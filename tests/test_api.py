@@ -359,3 +359,41 @@ def test_interactive_docs_can_be_switched_off_for_a_public_deployment(tmp_path):
     off = TestClient(create_app(Settings(db_path=str(tmp_path / "b.db"), secrets_dir=tmp_path / "s2", expose_docs=False)))
     assert off.get("/docs").status_code == 404 and off.get("/openapi.json").status_code == 404
     assert off.get("/health").status_code == 200
+
+
+def test_an_unfinished_2fa_setup_keeps_the_same_secret(env):
+    """Scan the QR code, then reload / go back / sign in again: the code in your app must still work."""
+    client, store, _ = env
+    make_user(store, "alice", "developer")
+
+    def start():
+        et = client.post("/auth/login", json={"username": "alice", "password": PW}).json()["enroll_token"]
+        return et, client.post("/auth/2fa/setup", headers=H(et)).json()["secret"]
+
+    et1, first = start()
+    assert client.post("/auth/2fa/setup", headers=H(et1)).json()["secret"] == first        # asking again: same secret
+    et2, second = start()                                                                    # a whole new sign-in: still the same
+    assert second == first
+    r = client.post("/auth/2fa/enable", headers=H(et2), json={"code": pyotp.TOTP(first).now()})
+    assert r.status_code == 200                                                              # the phone's code works
+
+
+def test_a_user_can_deliberately_start_the_setup_over(env):
+    client, store, _ = env
+    make_user(store, "alice", "developer")
+    et = client.post("/auth/login", json={"username": "alice", "password": PW}).json()["enroll_token"]
+    first = client.post("/auth/2fa/setup", headers=H(et)).json()["secret"]
+    again = client.post("/auth/2fa/setup?fresh=true", headers=H(et)).json()["secret"]
+    assert again != first
+    assert client.post("/auth/2fa/setup", headers=H(et)).json()["secret"] == again           # and that one now sticks
+    # the old secret's codes no longer enable 2FA
+    assert client.post("/auth/2fa/enable", headers=H(et), json={"code": pyotp.TOTP(first).now()}).status_code == 401
+    assert any(e["kind"] == "AUTH_2FA_SETUP_RESTARTED" for e in store.list_events())
+
+
+def test_setup_is_refused_once_2fa_is_on(env):
+    client, store, _ = env
+    make_user(store, "alice", "developer")
+    enroll(client, "alice")
+    et = client.post("/auth/login", json={"username": "alice", "password": PW}).json()
+    assert et["status"] == "mfa_required"                                                    # an enrolled user never gets a setup token

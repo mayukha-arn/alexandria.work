@@ -32,7 +32,15 @@ export default function Login() {
     if (r.status === "mfa_required") { setStep({ kind: "mfa", token: r.mfa_token! }); return; }
     const t = r.enroll_token!;
     const s = await api<{ otpauth_uri: string; secret: string }>("/auth/2fa/setup", { method: "POST", token: t, quiet401: true });
-    setStep({ kind: "enroll", token: t, uri: s.otpauth_uri, secret: s.secret, qr: await QRCode.toDataURL(s.otpauth_uri, { margin: 1, width: 220 }) });
+    setStep({ kind: "enroll", token: t, uri: s.otpauth_uri, secret: s.secret, qr: await QRCode.toDataURL(s.otpauth_uri, { margin: 2, width: 300, errorCorrectionLevel: "M" }) });
+  }); };
+
+  // Deliberately start over with a different secret. Only for when the first scan went wrong: the old entry
+  // in the authenticator app stops working, so it should be deleted from the app.
+  const newQr = () => { if (step.kind !== "enroll") return; run(async () => {
+    const s = await api<{ otpauth_uri: string; secret: string }>("/auth/2fa/setup?fresh=true", { method: "POST", token: step.token, quiet401: true });
+    setCode("");
+    setStep({ ...step, uri: s.otpauth_uri, secret: s.secret, qr: await QRCode.toDataURL(s.otpauth_uri, { margin: 2, width: 300, errorCorrectionLevel: "M" }) });
   }); };
 
   const submitCode = (e: FormEvent) => { e.preventDefault(); if (step.kind === "creds") return; run(async () => {
@@ -66,9 +74,14 @@ export default function Login() {
             <Notice tone="brand">First sign-in: set up two-factor authentication. Scan the code with an authenticator app (Google Authenticator, Authy, 1Password…), then enter the 6-digit code it shows.</Notice>
             <div className="flex flex-col items-center gap-2">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={step.qr} alt="Two-factor setup QR code" width={220} height={220} className="rounded-lg bg-white p-2" />
-              <details className="text-xs text-mute"><summary className="cursor-pointer">Can't scan? Enter the key by hand</summary><code data-testid="totp-secret" className="mt-1 block break-all font-mono text-ink">{step.secret}</code></details>
+              <img src={step.qr} alt="Two-factor setup QR code" width={300} height={300} className="max-w-full rounded-lg bg-white p-2" />
+              <details className="text-xs text-mute"><summary className="cursor-pointer">Can't scan? Enter the key by hand</summary><code data-testid="totp-secret" className="mt-1 block break-all font-mono text-ink">{step.secret}</code>
+                <span className="mt-1 block">In your app choose "Enter a setup key", type this key, and pick "Time based".</span></details>
             </div>
+            {error && <Notice tone="warn">
+              <b>Code not accepted?</b> Check that your phone's date and time are set to <b>automatic</b>, that you're typing the newest 6-digit code (they change every 30 seconds), and that the entry in your app came from <b>this</b> page.
+              If you scanned an earlier one, <button type="button" className="underline" onClick={newQr}>show a new QR code</button> (then delete the old entry in your app).
+            </Notice>}
             <CodeInput value={code} onChange={setCode} />
             <button className="btn btn-primary w-full" disabled={busy || code.length < 6}>{busy ? "Verifying…" : "Turn on 2FA and sign in"}</button>
           </form>

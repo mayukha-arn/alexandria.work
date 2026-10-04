@@ -250,13 +250,22 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         return {"status": "enrollment_required", "enroll_token": tok, "expires_in": settings.enroll_ttl}
 
     @app.post("/auth/2fa/setup")
-    def twofa_setup(auth: Auth = Depends(token_user("enroll"))) -> Dict[str, Any]:
-        if auth.user["totp_enrolled"]:
+    def twofa_setup(fresh: bool = False, auth: Auth = Depends(token_user("enroll"))) -> Dict[str, Any]:
+        """The secret behind the setup QR code. Until 2FA is switched on, asking again returns the SAME
+        secret: if every sign-in minted a new one, scanning the code and then reloading, pressing back or
+        signing in again would silently invalidate what is in your authenticator app. ``fresh=true``
+        deliberately starts over (the user must then delete the old entry from their app)."""
+        user = auth.user
+        if user["totp_enrolled"]:
             raise HTTPException(409, "2FA is already enabled")
-        secret = security.new_totp_secret()
-        store.update_user(auth.user["id"], totp_secret_enc=security.encrypt_secret(settings, secret),
-                          totp_last_step=None)
-        return {"otpauth_uri": security.totp_uri(settings, secret, auth.user["username"]), "secret": secret}
+        if user["totp_secret_enc"] and not fresh:
+            secret = security.decrypt_secret(settings, user["totp_secret_enc"])
+        else:
+            secret = security.new_totp_secret()
+            store.update_user(user["id"], totp_secret_enc=security.encrypt_secret(settings, secret), totp_last_step=None)
+            if fresh:
+                store.record_event("AUTH_2FA_SETUP_RESTARTED", user["id"], user["id"], {"user": user["id"]})
+        return {"otpauth_uri": security.totp_uri(settings, secret, user["username"]), "secret": secret}
 
     @app.post("/auth/2fa/enable")
     def twofa_enable(body: CodeBody, request: Request,

@@ -33,5 +33,6 @@ mk("dev", "developer", lead)
 slead = mk("slead", "support_lead", admin)
 mk("rep", "support_rep", slead)
 mk("exec", "executive", admin)
+mk("qa", "developer", lead)
 
 uvicorn.run(build_app(), host="127.0.0.1", port=8123, log_level="warning")

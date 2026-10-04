@@ -23,7 +23,7 @@ Sign in as any seeded user (`admin`, `senior_eng`, `senior_eng2`, `support_lead`
 To try the document review flow, use two different seniors (`senior_eng` and `senior_eng2`): the person who
 submits a document can never be the one who approves it.
 
-## Optional: record the audit trail on Solana
+## Record the audit trail on Solana (the live instance already does this on Devnet)
 ```bash
 export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
 solana-test-validator --reset &                                    # a local chain, free and offline

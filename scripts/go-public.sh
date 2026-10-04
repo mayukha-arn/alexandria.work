@@ -13,7 +13,7 @@ AZ="${AZ:-$HOME/.azure-cli-venv/bin/az}"
 APP="${SWA_NAME:-alexandria-gh-web}"; RG="${SWA_RG:-alexandria-rg}"
 DOMAIN="${SITE_DOMAIN:-the-only-one-who-knew-this-left-in-2019.work}"
 SITE_HOST="$("$AZ" staticwebapp show -n "$APP" -g "$RG" --query defaultHostname -o tsv)"
-CHAIN="${ALEXANDRIA_CHAIN:-off}"                       # set to solana once the program is on Devnet
+CHAIN="${ALEXANDRIA_CHAIN:-solana}"                     # the audit trail goes to Devnet; ALEXANDRIA_CHAIN=off to only queue it
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 

@@ -37,3 +37,5 @@ Azure providers registered on the student subscription (2026-10-03): Microsoft.C
 Python deps added for the backend: fastapi, uvicorn, pyjwt, argon2-cffi, pyotp, pynacl, base58, cryptography, python-multipart, httpx (dev).
 
 Local validator for tests/offline demos: `solana-test-validator` ships with the Solana CLI (ledger lives in the session scratchpad, disposable). Note the Solana CLI default config points at MAINNET; always pass `--url`.
+
+Solana Devnet (2026-10-04): program `Cgnt5epauqrsHCF9BhstkLyUVLjCnGP865bLJEqs22Y6` deployed with upgrade authority = the backend key (`.secrets/authority.json`, pubkey 6moDW9...). The ledger account was initialised; funded from the web faucet (~2 SOL).

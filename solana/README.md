@@ -40,3 +40,16 @@ solana --url devnet --keypair ../.secrets/authority.json program deploy ...
 Keypairs live in the gitignored `.secrets/` (`authority.json` = backend signer, `program-keypair.json` = program/upgrade identity). Back them up; anyone with `authority.json` can write to the ledger.
 
 Backend config: `SOLANA_RPC_URLS` (comma-separated, tried in order with 2s/4s/8s backoff; default public Devnet), `ALEXANDRIA_AUTHORITY_KEYPAIR`, `ALEXANDRIA_PROGRAM_ID`, `ALEXANDRIA_CHAIN=off` to queue without anchoring.
+
+## Deployed on Solana Devnet
+| | |
+|---|---|
+| Program | [`Cgnt5epauqrsHCF9BhstkLyUVLjCnGP865bLJEqs22Y6`](https://explorer.solana.com/address/Cgnt5epauqrsHCF9BhstkLyUVLjCnGP865bLJEqs22Y6?cluster=devnet) |
+| Ledger authority (the backend's signing key) | [`6moDW9phmDPPZh1Zg2b4bviLz4b2e4xq4GZDCqqv9qXf`](https://explorer.solana.com/address/6moDW9phmDPPZh1Zg2b4bviLz4b2e4xq4GZDCqqv9qXf?cluster=devnet) |
+| Cost | about 0.002 SOL per audit entry (rent for the entry account), about 0.004 SOL for an approved document |
+
+Checked on the real network: events and document approvals anchor in about a second, a document verifies after it is
+anchored and reads `tampered` once its stored text is edited, anchoring the same document twice is refused, and the
+keyed actor/action hashes on-chain match what the app computes. The running app anchors through its background loop
+(`ALEXANDRIA_CHAIN=solana`, the default of `scripts/go-public.sh`). Top up the authority from https://faucet.solana.com
+(Devnet) if its balance runs low; if the chain is unreachable, events simply queue and are sent later.

@@ -113,7 +113,15 @@ class ScriptedLLM:
     def __init__(self, reply: Callable[[List[Dict[str, str]]], str] | str) -> None:
         self._reply, self.calls = reply, []
 
-    def complete(self, messages: List[Dict[str, str]]) -> Completion:
+    def _text(self, messages: List[Dict[str, str]]) -> str:
         self.calls.append(messages)
-        text = self._reply(messages) if callable(self._reply) else self._reply
-        return Completion(text, 1.0, 2.0)
+        return self._reply(messages) if callable(self._reply) else self._reply
+
+    def complete(self, messages: List[Dict[str, str]]) -> Completion:
+        return Completion(self._text(messages), 1.0, 2.0)
+
+    def stream(self, messages: List[Dict[str, str]], piece: int = 3) -> Iterator[str]:
+        """Yield the reply in small pieces, like model tokens."""
+        text = self._text(messages)
+        for i in range(0, len(text), piece):
+            yield text[i:i + piece]

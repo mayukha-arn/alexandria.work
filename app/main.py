@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import jwt
 import requests
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
@@ -26,7 +26,7 @@ from . import security, wallet
 from .anchoring import Hasher, anchor_pending
 from .chain import ChainError
 from .documents import DocError, DocumentService
-from .rag import InputBlocked, ask as rag_ask
+from .rag import InputBlocked, ask as rag_ask, ask_stream, prepare as rag_prepare
 from .redaction import render_event
 from .verify import verify_document
 from .config import Settings
@@ -440,6 +440,29 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
             raise HTTPException(503, "the language model is unavailable; try again shortly")
         return {"answer": a.answer, "sources": a.sources, "grounded": a.grounded, "warnings": a.warnings,
                 "persona": a.persona, "metrics": a.metrics}
+
+    @app.post("/ask/stream")
+    def ask_streaming(body: AskBody, auth: Auth = Depends(token_user("access"))) -> StreamingResponse:
+        """Same pipeline as /ask, delivered as server-sent events: ``meta``, ``token``*, ``done``.
+        Read it with fetch() and a stream reader (EventSource cannot send the auth header)."""
+        actor = auth.actor
+        if not R.can(actor, R.Cap.ASK):
+            raise HTTPException(403, "not permitted")
+        if vectors is None or llm is None:
+            raise HTTPException(503, "the knowledge engine is not configured")
+        try:   # everything that can fail before the first byte is sent maps to a normal HTTP error
+            prep = rag_prepare(question=body.question, user=actor, store=store, vectors=vectors,
+                               registry_path=settings.registry_path, chain=chain)
+        except InputBlocked:
+            raise HTTPException(400, "Your question was blocked by the security policy.")
+
+        def events():
+            import json as _json
+            for ev in ask_stream(prep, llm, store):
+                yield f"event: {ev['event']}\ndata: {_json.dumps(ev['data'])}\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
     # --------------------------------------------------------------- audit
     @app.get("/audit/ledger")

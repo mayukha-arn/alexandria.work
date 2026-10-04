@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple
 
 MAX_QUESTION_CHARS = 2000
 
@@ -77,7 +77,9 @@ def check_input(question: str) -> Verdict:
 # ------------------------------------------------------------------------------- DLP
 
 _SSN = re.compile(r"\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b")
-_CARD = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+# A run of digits optionally separated by single spaces / hyphens, not glued to letters.
+_DIGIT_RUN = re.compile(r"(?<!\w)\d(?:[ -]?\d)*(?!\w)")
+_CARD_LENGTHS = (16, 15, 14, 13, 17, 18, 19)  # most common first
 _KEYS = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}"
     r"|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b"
@@ -100,7 +102,108 @@ def luhn_valid(number: str) -> bool:
     return total % 10 == 0
 
 
+def pii_spans(text: str) -> List[Tuple[int, int, str]]:
+    """Sensitive spans as (start, end, replacement), applied in the same order as before:
+    keys, then SSNs, then Luhn-valid card numbers. Earlier matches are blanked out so later
+    patterns cannot match inside them."""
+    spans: List[Tuple[int, int, str]] = []
+    work = text
+    for regex, label in ((_KEYS, "[REDACTED API KEY]"), (_SSN, "[REDACTED SSN]")):
+        for m in list(regex.finditer(work)):
+            spans.append((m.start(), m.end(), label))
+            work = work[:m.start()] + "\x00" * (m.end() - m.start()) + work[m.end():]
+    spans.extend(_card_spans(work, "[REDACTED CREDIT CARD]"))
+    return sorted(spans)
+
+
+def plausible_card(digits: str) -> bool:
+    """Luhn-valid AND a real issuer range and length. Luhn alone passes ~1 in 10 random numbers
+    (timestamps, order ids), so a known prefix keeps ordinary numbers from being masked."""
+    n = len(digits)
+    if not luhn_valid(digits):
+        return False
+    if digits[0] == "4":
+        return n in (13, 16, 19)
+    two = int(digits[:2])
+    if 51 <= two <= 55 or 2221 <= int(digits[:4]) <= 2720:
+        return n == 16
+    if two in (34, 37):
+        return n == 15
+    if digits[:4] == "6011" or two == 65 or 644 <= int(digits[:3]) <= 649 or two == 62:
+        return 16 <= n <= 19
+    if two == 35:
+        return 16 <= n <= 19
+    if 300 <= int(digits[:3]) <= 305 or two in (36, 38, 39):
+        return n == 14
+    return False
+
+
+def _card_spans(work: str, label: str) -> List[Tuple[int, int, str]]:
+    """Cards in digit runs. Only the start of a run (or right after a card) is tried, so a long
+    numeric id is never scanned with a sliding window that would find chance matches; adjacent
+    cards are peeled off one at a time; separators are never swallowed."""
+    spans: List[Tuple[int, int, str]] = []
+    for run in _DIGIT_RUN.finditer(work):
+        text = run.group(0)
+        pos = [i for i, c in enumerate(text) if c.isdigit()]
+        digits = "".join(text[i] for i in pos)
+        i = 0
+        while i < len(digits):
+            for n in _CARD_LENGTHS:
+                if i + n <= len(digits) and plausible_card(digits[i:i + n]):
+                    spans.append((run.start() + pos[i], run.start() + pos[i + n - 1] + 1, label))
+                    i += n
+                    break
+            else:
+                break
+    return spans
+
+
 def mask_pii(text: str) -> str:
-    text = _KEYS.sub("[REDACTED API KEY]", text)
-    text = _SSN.sub("[REDACTED SSN]", text)
-    return _CARD.sub(lambda m: "[REDACTED CREDIT CARD]" if luhn_valid(m.group(0)) else m.group(0), text)
+    out, last = [], 0
+    for start, end, label in pii_spans(text):
+        out.append(text[last:start])
+        out.append(label)
+        last = end
+    out.append(text[last:])
+    return "".join(out)
+
+
+class StreamMasker:
+    """Applies ``mask_pii`` to text that arrives in small pieces (LLM tokens).
+
+    A secret can be split across tokens (a card number "4111 1111 1111 1111" is four of them),
+    so text is only released once it is safely behind the stream head: we always keep an
+    unfinished tail, never cut inside a whitespace-delimited token, never split a detected
+    span, and hold an in-progress PEM private-key block until it ends. Concatenating every
+    ``feed`` result plus ``flush`` equals ``mask_pii`` of the whole text.
+    """
+
+    LOOKBACK = 40  # longer than any multi-token secret (a spaced card number is 23 chars)
+
+    def __init__(self) -> None:
+        self.pending = ""
+
+    def feed(self, piece: str) -> str:
+        self.pending += piece
+        text = self.pending
+        safe = len(text) - self.LOOKBACK
+        begin = text.rfind("-----BEGIN")
+        if begin != -1 and "-----END" not in text[begin:]:
+            safe = min(safe, begin)
+        if safe <= 0:
+            return ""
+        cut = max(text.rfind(" ", 0, safe), text.rfind("\n", 0, safe), text.rfind("\t", 0, safe))
+        if cut <= 0:
+            return ""
+        for start, end, _ in pii_spans(text):
+            if start < cut < end:
+                cut = start
+        if cut <= 0:
+            return ""
+        head, self.pending = text[:cut], text[cut:]
+        return mask_pii(head)
+
+    def flush(self) -> str:
+        out, self.pending = mask_pii(self.pending), ""
+        return out

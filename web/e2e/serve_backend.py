@@ -7,7 +7,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-state = ROOT / ".e2e-state"
+state = pathlib.Path(os.environ.get("E2E_STATE", ROOT / ".e2e-state"))
 shutil.rmtree(state, ignore_errors=True)
 state.mkdir()
 os.environ.update(

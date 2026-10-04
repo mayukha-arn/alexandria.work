@@ -10,6 +10,8 @@ import uuid
 from contextlib import closing, contextmanager
 from typing import Any, Dict, Iterator, List, Optional
 
+from cryptography.fernet import Fernet
+
 import roles as R
 
 SCHEMA = """
@@ -59,7 +61,8 @@ CREATE TABLE IF NOT EXISTS events (
     min_clearance INTEGER NOT NULL DEFAULT 0,
     created_at    REAL NOT NULL,
     tx_signature  TEXT,
-    anchored_at   REAL
+    anchored_at   REAL,
+    anchor_error  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_unanchored ON events(anchored_at) WHERE anchored_at IS NULL;
 """
@@ -72,8 +75,10 @@ def _row_user(row: sqlite3.Row) -> Dict[str, Any]:
 
 
 class Store:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, fernet_key: Optional[str] = None) -> None:
         self.db_path = db_path
+        # Event payloads hold the plaintext behind on-chain hashes: encrypt them at rest.
+        self._fernet = Fernet(fernet_key.encode()) if fernet_key else None
         with closing(sqlite3.connect(db_path)) as conn:
             conn.executescript(SCHEMA)
 
@@ -191,7 +196,7 @@ class Store:
             return c.execute(
                 "INSERT INTO events (kind, actor_id, target_id, department, payload, payload_hash, "
                 "min_clearance, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (kind, actor_id, target_id, department, body, digest, min_clearance, time.time()),
+                (kind, actor_id, target_id, department, self._seal(body), digest, min_clearance, time.time()),
             ).lastrowid
 
         if conn is not None:
@@ -199,7 +204,34 @@ class Store:
         with self.tx() as c:
             return _do(c)
 
+    def _seal(self, body: str) -> str:
+        return self._fernet.encrypt(body.encode()).decode() if self._fernet else body
+
+    def _unseal(self, stored: str) -> str:
+        return self._fernet.decrypt(stored.encode()).decode() if self._fernet else stored
+
+    def _event(self, row: sqlite3.Row) -> Dict[str, Any]:
+        d = dict(row)
+        d["payload"] = self._unseal(d["payload"])
+        return d
+
     def list_events(self, only_unanchored: bool = False) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM events" + (" WHERE anchored_at IS NULL" if only_unanchored else "") + " ORDER BY id"
         with self.tx() as c:
-            return [dict(r) for r in c.execute(sql)]
+            return [self._event(r) for r in c.execute(sql)]
+
+    def pending_events(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Not yet on-chain and not permanently rejected, oldest first."""
+        with self.tx() as c:
+            rows = c.execute("SELECT * FROM events WHERE anchored_at IS NULL AND anchor_error IS NULL "
+                             "ORDER BY id LIMIT ?", (limit,)).fetchall()
+        return [self._event(r) for r in rows]
+
+    def mark_anchored(self, event_id: int, signature: Optional[str]) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE events SET tx_signature = ?, anchored_at = ? WHERE id = ?",
+                      (signature, time.time(), event_id))
+
+    def mark_anchor_error(self, event_id: int, error: str) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE events SET anchor_error = ? WHERE id = ?", (error[:500], event_id))

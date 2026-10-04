@@ -14,9 +14,14 @@ All installs are user-level (no sudo) unless noted. Disk figures are approximate
 | 2026-10-03 | avm (Anchor version manager) | 1.2.0 | `~/.cargo/bin/avm` | Installs the Anchor CLI | `cargo uninstall avm` |
 | 2026-10-03 | Azure CLI (`az`, pip, own venv) | 2.90.0 | `~/.azure-cli-venv` (683 MB) | Deploy / manage Azure resources | `rm -rf ~/.azure-cli-venv` |
 | 2026-10-03 | Anchor CLI (via `avm install latest`) | 1.2.0 | `~/.avm`, `~/.cargo/bin/anchor` | Build / deploy the Solana audit program | `avm uninstall <ver>` |
+| 2026-10-03 | Rust 1.89.0 toolchain (pinned by the Anchor workspace) + Solana SBF platform-tools | 1.89.0 | `~/.rustup`, `~/.cache/solana` | `anchor build` of the audit program | `rustup toolchain uninstall 1.89.0`, `rm -rf ~/.cache/solana` |
+| 2026-10-03 | Python: solders (JSON-RPC is done with `requests`; solana-py 0.41 is async-only, so not used) | 0.29.0 | `~/alexandria/.venv` | Build / sign Solana transactions | with the env |
+| 2026-10-03 | Build cache `solana/target` (gitignored) | ~2 GB | `~/alexandria/solana/target` | Anchor / cargo build output | `cd solana && cargo clean` (rebuild when needed) |
 
 PATH additions needed in a shell (not written to any dotfile):
 `export PATH="$HOME/.cargo/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.azure-cli-venv/bin:$PATH"`
 
 Azure providers registered on the student subscription (2026-10-03): Microsoft.Compute, Microsoft.Web, Microsoft.App, Microsoft.OperationalInsights, Microsoft.KeyVault (free; undo with `az provider unregister -n <name>`).
 Python deps added for the backend: fastapi, uvicorn, pyjwt, argon2-cffi, pyotp, pynacl, base58, cryptography, python-multipart, httpx (dev).
+
+Local validator for tests/offline demos: `solana-test-validator` ships with the Solana CLI (ledger lives in the session scratchpad, disposable). Note the Solana CLI default config points at MAINNET; always pass `--url`.

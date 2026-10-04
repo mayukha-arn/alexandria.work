@@ -4,7 +4,11 @@ request, so a revoked right or lowered clearance takes effect immediately."""
 
 from __future__ import annotations
 
+import logging
+import sqlite3
+import threading
 import time
+from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +19,10 @@ from pydantic import BaseModel, Field
 
 import roles as R
 from . import security, wallet
+from .anchoring import Hasher, anchor_pending
+from .chain import ChainError
+from .redaction import render_event
+from .verify import verify_document
 from .config import Settings
 from .store import Store
 
@@ -71,11 +79,36 @@ def _public_user(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def create_app(settings: Optional[Settings] = None) -> FastAPI:
+log = logging.getLogger("alexandria.api")
+
+
+def create_app(settings: Optional[Settings] = None, chain: Any = None,
+               anchor_interval: float = 10.0) -> FastAPI:
+    """``chain`` is a SolanaChain (or MemoryChain in tests). With one, a background loop
+    anchors the audit outbox; without one, events simply queue until a chain is configured."""
     settings = settings or Settings()
-    store = Store(settings.db_path)
-    app = FastAPI(title="Alexandria", docs_url="/docs")
-    app.state.settings, app.state.store = settings, store
+    store = Store(settings.db_path, settings.fernet_key)
+    hasher = Hasher(settings.ledger_key)
+    stop = threading.Event()
+
+    def anchor_loop() -> None:
+        while not stop.wait(anchor_interval):
+            try:
+                anchor_pending(store, chain, hasher)
+            except Exception:  # never let the loop die
+                log.exception("anchoring run failed")
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        thread = None
+        if chain is not None:
+            thread = threading.Thread(target=anchor_loop, name="anchor-loop", daemon=True)
+            thread.start()
+        yield
+        stop.set()
+
+    app = FastAPI(title="Alexandria", docs_url="/docs", lifespan=lifespan)
+    app.state.settings, app.state.store, app.state.chain, app.state.hasher = settings, store, chain, hasher
     bearer = HTTPBearer(auto_error=False)
 
     def unauthorized(detail: str = "not authenticated") -> HTTPException:
@@ -291,6 +324,40 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         store.record_event("WALLET_RESET", actor.id, user_id, {"user": user_id}, department=tgt.department,
                            min_clearance=tgt.effective_clearance)
         return {"status": "reset"}
+
+    # --------------------------------------------------------------- audit
+    @app.get("/audit/ledger")
+    def audit_ledger(limit: int = 100, auth: Auth = Depends(token_user("access"))) -> List[Dict[str, Any]]:
+        """Newest first. Fields above the viewer's clearance come back as redaction markers."""
+        if not R.can(auth.actor, R.Cap.VIEW_AUDIT):
+            raise HTTPException(403, "not permitted")
+        clearance = auth.actor.effective_clearance
+        events = store.list_events()[-max(1, min(limit, 500)):]
+        return [render_event(e, clearance, hasher) for e in reversed(events)]
+
+    @app.get("/audit/status")
+    def audit_status(auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        if not R.can(auth.actor, R.Cap.VIEW_AUDIT):
+            raise HTTPException(403, "not permitted")
+        evs = store.list_events()
+        return {"chain_configured": chain is not None, "total": len(evs),
+                "anchored": sum(e["anchored_at"] is not None for e in evs),
+                "queued": sum(e["anchored_at"] is None and not e["anchor_error"] for e in evs),
+                "rejected": sum(bool(e["anchor_error"]) for e in evs)}
+
+    @app.get("/audit/verify/{doc_hash}")
+    def audit_verify(doc_hash: str, auth: Auth = Depends(token_user("access"))) -> Dict[str, Any]:
+        """Tamper check for a document the caller is cleared to read."""
+        if chain is None:
+            raise HTTPException(503, "blockchain verification is not configured")
+        with closing(sqlite3.connect(settings.registry_path)) as conn:
+            row = conn.execute("SELECT min_role FROM processed_docs WHERE doc_hash = ?", (doc_hash,)).fetchone()
+        if not row or not R.can_read(auth.actor, row[0]):
+            raise HTTPException(404, "document not found")  # same answer whether hidden or absent
+        try:
+            return verify_document(settings.registry_path, chain, doc_hash)
+        except ChainError:
+            raise HTTPException(503, "blockchain temporarily unreachable; try again")
 
     @app.get("/health")
     def health() -> Dict[str, str]:

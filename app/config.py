@@ -27,6 +27,7 @@ def _load_secret(directory: Path, filename: str, env: str, make) -> str:
 @dataclass
 class Settings:
     db_path: str = field(default_factory=lambda: os.getenv("ALEXANDRIA_DB", str(ROOT / "alexandria.db")))
+    registry_path: str = field(default_factory=lambda: os.getenv("ALEXANDRIA_REGISTRY", str(ROOT / "doc_registry.db")))
     secrets_dir: Path = field(default_factory=lambda: Path(os.getenv("ALEXANDRIA_SECRETS", ROOT / ".secrets")))
     issuer: str = "alexandria"
     access_ttl: int = 15 * 60       # full session
@@ -41,5 +42,9 @@ class Settings:
     def __post_init__(self) -> None:
         self.jwt_secret = _load_secret(self.secrets_dir, "jwt.key", "ALEXANDRIA_JWT_SECRET",
                                        lambda: secrets.token_urlsafe(64))
+        # Key for the HMAC used on actor/action/payload hashes that go on-chain: plain SHA-256
+        # of a small set of values (e.g. action names) could be reversed by anyone.
+        self.ledger_key = _load_secret(self.secrets_dir, "ledger.key", "ALEXANDRIA_LEDGER_KEY",
+                                       lambda: secrets.token_urlsafe(48))
         self.fernet_key = _load_secret(self.secrets_dir, "totp.key", "ALEXANDRIA_FERNET_KEY",
                                        lambda: base64.urlsafe_b64encode(os.urandom(32)).decode())

@@ -14,3 +14,4 @@ pynacl>=1.5
 base58>=2.1
 cryptography>=42
 python-multipart>=0.0.9
+solders>=0.21

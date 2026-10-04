@@ -30,7 +30,8 @@ echo "API is up on 127.0.0.1:8088"
 
 say "2/3 tunnel"
 pkill -f "cloudflared tunnel" 2>/dev/null || true; sleep 1
-nohup "$HOME/.local/bin/cloudflared" tunnel --no-autoupdate --url http://127.0.0.1:8088 > "$LOG/tunnel.log" 2>&1 &
+# CF_PROTOCOL=http2 forces TCP (default: cloudflared picks). On a flaky network neither protocol was reliably better.
+nohup "$HOME/.local/bin/cloudflared" tunnel --no-autoupdate ${CF_PROTOCOL:+--protocol "$CF_PROTOCOL"} --url http://127.0.0.1:8088 > "$LOG/tunnel.log" 2>&1 &
 URL=""
 for _ in $(seq 1 60); do URL="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG/tunnel.log" | head -1 || true)"; [ -n "$URL" ] && break; sleep 1; done
 [ -n "$URL" ] || { echo "no tunnel address; see $LOG/tunnel.log"; exit 1; }

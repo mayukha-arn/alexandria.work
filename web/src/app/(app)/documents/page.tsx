@@ -1,8 +1,9 @@
 "use client";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { FileText, ShieldCheck, UploadCloud } from "lucide-react";
 import { api, ApiError, has, type Doc } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { allowedLabels, cap } from "@/lib/format";
+import { allowedLabels, cap, docTitle } from "@/lib/format";
 import { Badge, Empty, ErrorBanner, Field, Notice, Page } from "@/components/ui";
 
 const VERIFY_TONE: Record<string, "good" | "warn" | "bad"> = { verified: "good", unanchored: "warn", tampered: "bad" };
@@ -31,15 +32,15 @@ export default function DocumentsPage() {
       {docs.length === 0 ? <Empty>No approved documents yet. Upload one: a colleague will review it before it goes live.</Empty> : (
         <div className="card overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead className="border-b border-line text-xs uppercase tracking-wide text-mute"><tr><th className="p-3">Document</th><th>Department</th><th>Visible to</th><th>Status</th><th>Integrity</th><th /></tr></thead>
+            <thead className="border-b border-line bg-panel2/60 text-xs uppercase tracking-wide text-mute"><tr><th className="p-3">Document</th><th>Department</th><th>Visible to</th><th>Status</th><th>Integrity</th><th /></tr></thead>
             <tbody>
               {docs.map((d) => (
-                <tr key={d.doc_hash} className="border-b border-line/60 last:border-0">
-                  <td className="max-w-xs p-3"><div className="truncate font-medium" title={d.source}>{d.source}</div><div className="font-mono text-xs text-mute">{d.doc_hash.slice(0, 12)}…</div></td>
-                  <td>{d.department ?? "—"}</td>
+                <tr key={d.doc_hash} className="border-b border-line/60 transition last:border-0 hover:bg-panel2/50">
+                  <td className="max-w-sm p-3"><div className="flex items-center gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand"><FileText size={17} /></span><div className="min-w-0"><div className="truncate font-medium" title={d.source}>{docTitle(d.source)}</div><div className="font-mono text-[11px] text-mute">{d.doc_hash.slice(0, 12)}…</div></div></div></td>
+                  <td className="capitalize">{d.department ?? "—"}</td>
                   <td><Badge>{d.min_role}</Badge></td>
                   <td><Badge tone={d.status === "active" ? "good" : "neutral"}>{d.status === "active" ? "live" : d.status}</Badge>{!d.indexed && d.status === "active" && <Badge tone="warn" title="Still being indexed for search">indexing</Badge>}</td>
-                  <td>{verdicts[d.doc_hash] ? <Badge tone={VERIFY_TONE[verdicts[d.doc_hash]] ?? "neutral"}>{verdicts[d.doc_hash]}</Badge> : <button className="btn" onClick={() => verify(d.doc_hash)}>Verify</button>}</td>
+                  <td>{verdicts[d.doc_hash] ? <Badge tone={VERIFY_TONE[verdicts[d.doc_hash]] ?? "neutral"}>{verdicts[d.doc_hash] === "verified" ? <><ShieldCheck size={12} className="mr-1" />verified</> : verdicts[d.doc_hash]}</Badge> : <button className="btn" onClick={() => verify(d.doc_hash)}>Verify</button>}</td>
                   <td className="p-3 text-right">
                     {canPurge && (confirm === d.doc_hash
                       ? <span className="space-x-1"><button className="btn btn-danger" onClick={() => purge(d.doc_hash)}>Confirm delete</button><button className="btn" onClick={() => setConfirm(null)}>Cancel</button></span>
@@ -88,8 +89,8 @@ function Upload({ onDone }: { onDone: () => void }) {
 
   return (
     <form onSubmit={submit} className="card space-y-3 p-4" aria-label="Add a document">
-      <div className="flex items-center justify-between"><h2 className="font-semibold">Add a document</h2>
-        <div role="tablist" className="flex gap-1">{(["file", "url"] as const).map((m) => <button type="button" key={m} role="tab" aria-selected={mode === m} onClick={() => setMode(m)} className={`rounded-lg px-3 py-1 text-sm ${mode === m ? "bg-brand/15" : "text-mute"}`}>{m === "file" ? "PDF file" : "Web page"}</button>)}</div></div>
+      <div className="flex items-center justify-between"><h2 className="flex items-center gap-2 font-semibold"><UploadCloud size={18} className="text-brand" /> Add a document</h2>
+        <div role="tablist" className="flex gap-1">{(["file", "url"] as const).map((m) => <button type="button" key={m} role="tab" aria-selected={mode === m} onClick={() => setMode(m)} className={`rounded-lg px-3 py-1 text-sm font-medium ${mode === m ? "bg-brand/10 text-brand" : "text-mute hover:text-ink"}`}>{m === "file" ? "PDF file" : "Web page"}</button>)}</div></div>
       <ErrorBanner error={error} />
       {result && <Notice tone={result.tone}>{result.text}</Notice>}
       <div className="grid gap-3 sm:grid-cols-3">

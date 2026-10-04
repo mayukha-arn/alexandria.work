@@ -68,6 +68,10 @@ def has_bad_citations(answer: str, n_hits: int) -> bool:
     return any(not 1 <= int(m) <= n_hits for m in _CITE.findall(answer))
 
 
+class LLMUnavailable(Exception):
+    """A hosted model could not be reached or rejected the request (auth, quota, outage)."""
+
+
 @dataclass
 class Completion:
     text: str

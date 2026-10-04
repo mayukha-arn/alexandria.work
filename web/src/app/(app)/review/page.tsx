@@ -1,4 +1,5 @@
 "use client";
+import { docTitle } from "@/lib/format";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ApiError, type Pending } from "@/lib/api";
@@ -42,14 +43,14 @@ function Item({ item, onDone }: { item: Pending; onDone: (msg: string) => void }
       const ch = await api<{ nonce: string; message: string }>(`/documents/pending/${item.id}/challenge`, { body: { action: approve ? "approve" : "reject" } });
       const signature = await signer.sign(ch.message);
       await api(`/documents/pending/${item.id}/decision`, { body: { approve, note: note || null, nonce: ch.nonce, signature } });
-      onDone(approve ? `Approved "${item.source}". It is now searchable, and the approval is queued for the blockchain.` : `Rejected "${item.source}".`);
+      onDone(approve ? `Approved "${docTitle(item.source)}". It is now searchable, and the approval is queued for the blockchain.` : `Rejected "${docTitle(item.source)}".`);
     } catch (e) { setError(e instanceof ApiError ? e.detail : (e as Error).message); } finally { setBusy(null); }
   };
 
   return (
     <article className="card space-y-3 p-4" aria-label={`Review ${item.source}`}>
       <header className="flex flex-wrap items-center gap-2">
-        <h2 className="font-semibold">{item.source}</h2>
+        <h2 className="font-semibold">{docTitle(item.source)}</h2>
         <Badge tone={item.is_new_document ? "brand" : "neutral"}>{item.is_new_document ? "new document" : `update · ${Math.round(item.similarity * 100)}% similar`}</Badge>
         <Badge>{item.min_role}</Badge>{item.department && <Badge>{item.department}</Badge>}
         <Badge tone={item.risk_level === "high" ? "bad" : "good"}>{item.risk_level === "high" ? "⚠ high risk" : "normal risk"}</Badge>

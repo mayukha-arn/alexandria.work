@@ -26,3 +26,7 @@ export const explorerUrl = (sig: string, apiUrl: string) => {
     ? `https://explorer.solana.com/tx/${sig}?cluster=custom&customUrl=${encodeURIComponent("http://127.0.0.1:8899")}`
     : `https://explorer.solana.com/tx/${sig}?cluster=${cluster}`;
 };
+
+/** A document's display title from its source label: "file:Payroll Calendar.pdf" -> "Payroll Calendar". */
+export const docTitle = (source: string) =>
+  source.replace(/^thread:\d+ /, "").replace(/^file:/, "").replace(/\.pdf$/i, "").trim() || "document";

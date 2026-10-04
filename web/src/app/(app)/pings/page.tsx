@@ -1,12 +1,14 @@
 "use client";
 import { Suspense, useCallback, useEffect, useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Plus } from "lucide-react";
+import { Plus, Sparkles } from "lucide-react";
 import { api, ApiError, type Ping, type PingMessage } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useLive } from "@/lib/realtime";
 import { allowedLabels, cap, fmtTime, timeAgo } from "@/lib/format";
 import { Badge, Empty, ErrorBanner, Field, Notice, Redacted } from "@/components/ui";
+import { Avatar } from "@/components/avatar";
+import { displayName } from "@/lib/people";
 
 const TONE: Record<string, "neutral" | "good" | "warn" | "brand" | "bad"> = { open: "warn", claimed: "brand", answered: "good", resolved: "neutral", closed: "neutral" };
 
@@ -44,11 +46,12 @@ function Pings() {
 
   return (
     <div className="flex h-full flex-col md:flex-row">
-      <div className="flex max-h-72 shrink-0 flex-col border-b border-line md:max-h-none md:w-80 md:border-b-0 md:border-r">
+      <div className="flex max-h-72 shrink-0 flex-col border-b border-line bg-panel2/60 md:max-h-none md:w-80 md:border-b-0 md:border-r">
+        <div className="px-4 pt-4"><h1 className="text-lg font-bold">Pings</h1><p className="text-xs text-mute">Questions to and from departments</p></div>
         <div className="flex items-center justify-between gap-2 px-4 py-3">
           <div role="tablist" className="flex gap-1">
             {(["inbox", "sent"] as const).map((b) => (
-              <button key={b} role="tab" aria-selected={box === b} onClick={() => setBox(b)} className={`rounded-lg px-3 py-1 text-sm ${box === b ? "bg-brand/15" : "text-mute hover:text-ink"}`}>{cap(b)}</button>
+              <button key={b} role="tab" aria-selected={box === b} onClick={() => setBox(b)} className={`rounded-lg px-3 py-1 text-sm font-medium ${box === b ? "bg-brand/10 text-brand" : "text-mute hover:text-ink"}`}>{cap(b)}</button>
             ))}
           </div>
           <button className="btn btn-primary" onClick={() => setCreating(true)}><Plus size={14} /> New ping</button>
@@ -59,9 +62,12 @@ function Pings() {
           {list.map((p) => (
             <li key={p.id}>
               <button onClick={() => open(p.id)} aria-current={p.id === selected ? "true" : undefined}
-                className={`w-full rounded-lg border px-3 py-2 text-left ${p.id === selected ? "border-brand bg-brand/10" : "border-transparent hover:bg-panel2"}`}>
-                <div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-medium">{p.title}</span><Badge tone={TONE[p.status]}>{p.status}</Badge></div>
-                <div className="mt-0.5 text-xs text-mute">{box === "inbox" ? `from ${p.asker}` : `to ${p.to_department}`} · {timeAgo(p.updated_at)}</div>
+                className={`flex w-full gap-2.5 rounded-lg border px-2.5 py-2 text-left transition ${p.id === selected ? "border-brand/40 bg-white shadow-sm" : "border-transparent hover:bg-white"}`}>
+                <Avatar name={box === "inbox" ? p.asker : p.to_department} size={32} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-semibold">{p.title}</span><Badge tone={TONE[p.status]}>{p.status}</Badge></div>
+                  <div className="mt-0.5 truncate text-xs text-mute">{box === "inbox" ? `from ${displayName(p.asker)}` : <>to <span className="capitalize">{p.to_department}</span></>} · {timeAgo(p.updated_at)}</div>
+                </div>
               </button>
             </li>
           ))}
@@ -121,8 +127,8 @@ function Thread({ ping, reload }: { ping: Ping; reload: () => void }) {
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 p-4 md:p-6">
       <header>
-        <div className="flex flex-wrap items-center gap-2"><h2 className="text-lg font-semibold">{ping.title}</h2><Badge tone={TONE[ping.status]}>{ping.status}</Badge><Badge title="Minimum level needed to see this ping">{ping.min_role}</Badge></div>
-        <p className="mt-1 text-sm text-mute">{ping.asker} → <b>{ping.to_department}</b> · asked {timeAgo(ping.created_at)}{ping.claimed_by && <> · picked up by <b>{ping.claimed_by}</b></>}</p>
+        <div className="flex flex-wrap items-center gap-2"><h2 className="text-xl font-bold">{ping.title}</h2><Badge tone={TONE[ping.status]}>{ping.status}</Badge><Badge title="Minimum level needed to see this ping">{ping.min_role}</Badge></div>
+        <p className="mt-1 text-sm text-mute">{displayName(ping.asker)} → <b className="capitalize">{ping.to_department}</b> · asked {timeAgo(ping.created_at)}{ping.claimed_by && <> · picked up by <b>{displayName(ping.claimed_by)}</b></>}</p>
       </header>
       <ErrorBanner error={error} />
       <div className="flex flex-wrap gap-2">
@@ -159,12 +165,15 @@ function Thread({ ping, reload }: { ping: Ping; reload: () => void }) {
 function Message({ m, mine }: { m: PingMessage; mine: boolean }) {
   const tone = m.kind === "answer" ? "border-good/40" : m.kind === "question" ? "border-brand/40" : "border-line";
   return (
-    <li className={`rounded-xl border bg-panel p-3 ${tone}`}>
+    <li className={`flex gap-3 rounded-xl border bg-panel p-3 ${tone}`}>
+      <Avatar name={m.author} />
+      <div className="min-w-0 flex-1">
       <div className="mb-1 flex flex-wrap items-center gap-2 text-xs text-mute">
-        <b className="text-sm text-ink">{m.author}</b>{mine && <span>(you)</span>}<Badge tone={m.kind === "answer" ? "good" : m.kind === "question" ? "brand" : "neutral"}>{m.kind}</Badge>
+        <b className="text-sm text-ink">{displayName(m.author)}</b>{mine && <span>(you)</span>}<Badge tone={m.kind === "answer" ? "good" : m.kind === "question" ? "brand" : "neutral"}>{m.kind}</Badge>
         {m.min_role && <span title="Who may read this">🔒 {m.min_role}</span>}<span>{fmtTime(m.created_at)}</span>
       </div>
       {m.redacted ? <Redacted text={m.body} /> : <p className="whitespace-pre-wrap break-words text-sm">{m.body}</p>}
+      </div>
     </li>
   );
 }
@@ -178,7 +187,7 @@ function DraftPanel({ ping, reload }: { ping: Ping; reload: () => void }) {
   const state = ping.draft?.state;
   return (
     <section className="card space-y-3 p-4" aria-label="Turn this into knowledge">
-      <div className="flex items-center justify-between gap-2"><h3 className="font-semibold">Turn this into knowledge</h3>{state && <Badge tone={state === "live" ? "good" : state === "rejected" ? "bad" : "warn"}>draft {state}</Badge>}</div>
+      <div className="flex items-center justify-between gap-2"><h3 className="flex items-center gap-1.5 font-semibold"><Sparkles size={16} className="text-brand" /> Turn this into knowledge</h3>{state && <Badge tone={state === "live" ? "good" : state === "rejected" ? "bad" : "warn"}>draft {state}</Badge>}</div>
       <p className="text-sm text-mute">Write up the solution so the next person doesn't need to ask. A draft is written for you to edit, then <b>a different person must approve it</b> before it becomes searchable knowledge.</p>
       <ErrorBanner error={error} />
       {done && <Notice tone="good">{done}</Notice>}

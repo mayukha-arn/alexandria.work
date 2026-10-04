@@ -1,94 +1,82 @@
 "use client";
-import { useRef, useState, type FormEvent } from "react";
-import { BadgeCheck, ShieldAlert } from "lucide-react";
-import { ApiError, type AskDone } from "@/lib/api";
-import { streamPost } from "@/lib/sse";
+import { Suspense, useEffect, useRef, useState, type FormEvent } from "react";
+import { useSearchParams } from "next/navigation";
+import { ArrowUp, Sparkles } from "lucide-react";
 import { useAuth } from "@/lib/auth";
-import { Badge, ErrorBanner, Notice, Page } from "@/components/ui";
+import { displayName } from "@/lib/people";
+import { AiAnswer } from "@/components/ai-answer";
+import { Avatar } from "@/components/avatar";
 
-const PERSONA: Record<string, string> = {
-  support: "Plain-language steps and a ready-to-send customer message",
-  developer: "Technical detail: exact paths, parameters, error codes",
-  executive: "A short summary with a risk and SLA callout",
+const SUGGESTIONS: Record<string, string[]> = {
+  support: ["How do I handle a refund over $100?", "A customer's paycheck is missing overtime. What do I tell them?", "What's our response time commitment for payroll errors?"],
+  developer: ["What should I do when checkout returns a 500 error?", "How do I rotate the payroll API keys?", "What are the rate limits on the payroll API?"],
+  executive: ["Summarise our open compliance risks", "What is our SLA for payroll corrections?", "Which teams depend on the payroll API?"],
 };
-const VERIFY: Record<string, { tone: "good" | "warn" | "bad" | "neutral"; text: string }> = {
-  verified: { tone: "good", text: "Verified on-chain" },
-  unanchored: { tone: "warn", text: "Not yet anchored on-chain" },
-  unchecked: { tone: "warn", text: "Could not check on-chain" },
-  tampered: { tone: "bad", text: "Failed integrity check" },
-};
-
-type Turn = { question: string; text: string; done: AskDone | null; warnings: string[]; error: string | null; streaming: boolean };
 
 export default function AskPage() {
+  return <Suspense fallback={null}><Ask /></Suspense>;
+}
+
+function Ask() {
   const { me } = useAuth();
+  const params = useSearchParams();
   const [q, setQ] = useState("");
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const abort = useRef<AbortController | null>(null);
-  const busy = turns.at(-1)?.streaming ?? false;
+  const [turns, setTurns] = useState<string[]>([]);
+  const bottom = useRef<HTMLDivElement>(null);
+  const seeded = useRef(false);
 
-  const update = (patch: Partial<Turn>) => setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, ...patch } : x)));
+  useEffect(() => {
+    const initial = params.get("q");
+    if (initial && !seeded.current) { seeded.current = true; setTurns([initial]); }
+  }, [params]);
+  useEffect(() => { bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [turns]);
 
-  const ask = async (e: FormEvent) => {
-    e.preventDefault();
-    const question = q.trim();
-    if (!question || busy) return;
+  const ask = (e?: FormEvent, text?: string) => {
+    e?.preventDefault();
+    const question = (text ?? q).trim();
+    if (!question) return;
     setQ("");
-    setTurns((t) => [...t, { question, text: "", done: null, warnings: [], error: null, streaming: true }]);
-    abort.current = new AbortController();
-    let acc = "";
-    try {
-      await streamPost("/ask/stream", { question }, (ev) => {
-        if (ev.event === "meta") update({ warnings: ev.data.warnings });
-        else if (ev.event === "token") { acc += ev.data.text; update({ text: acc }); }
-        else if (ev.event === "done") update({ done: ev.data, text: ev.data.answer, warnings: ev.data.warnings, streaming: false });
-        else if (ev.event === "error") update({ error: ev.data.detail, streaming: false });
-      }, abort.current.signal);
-      update({ streaming: false });
-    } catch (err) {
-      update({ error: err instanceof ApiError ? err.detail : "Something went wrong.", streaming: false });
-    }
+    setTurns((t) => [...t, question]);
   };
+  const ideas = SUGGESTIONS[me?.persona ?? "support"] ?? SUGGESTIONS.support;
 
   return (
-    <Page title="Ask Alexandria" subtitle={`Answers come only from documents you're cleared to read, written for your role (${me?.persona}): ${PERSONA[me?.persona ?? "support"]}.`}>
-      <div className="space-y-4" aria-live="polite">
-        {turns.length === 0 && <Notice tone="brand">Ask anything about your company's documented knowledge. If the documents don't contain the answer, Alexandria says so instead of guessing.</Notice>}
-        {turns.map((t, i) => (
-          <article key={i} className="space-y-2">
-            <div className="ml-auto max-w-[85%] rounded-xl bg-brand/15 px-3 py-2 text-sm">{t.question}</div>
-            <div className="card space-y-3 p-4">
-              <ErrorBanner error={t.error} />
-              {t.warnings.map((w, k) => <Notice key={k}><ShieldAlert size={14} className="mr-1 inline" />{w}</Notice>)}
-              {t.text ? <p className="whitespace-pre-wrap text-sm leading-relaxed" data-testid="answer">{t.text}{t.streaming && <span className="animate-pulse">▍</span>}</p> : t.streaming && <p className="text-sm text-mute">Searching your documents…</p>}
-              {t.done && (
-                <div className="space-y-2 border-t border-line pt-3">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-mute">
-                    {t.done.grounded ? <Badge tone="good"><BadgeCheck size={12} className="mr-1" />Grounded in documents</Badge> : <Badge tone="warn">Not tied to documents: treat as unverified</Badge>}
-                    <Badge>{t.done.persona} view</Badge>
-                    {t.done.metrics.ttft_ms != null && <span>first words in {Math.round(t.done.metrics.ttft_ms)} ms</span>}
-                  </div>
-                  {t.done.sources.length > 0 && (
-                    <ul className="space-y-1" aria-label="Sources">
-                      {t.done.sources.map((s) => (
-                        <li key={s.chunk_id} className="flex flex-wrap items-center gap-2 text-sm">
-                          <span className="font-mono text-xs text-mute">[{s.n}]</span><span>{s.source || "document"}</span>
-                          {s.department && <Badge>{s.department}</Badge>}
-                          {s.verification && VERIFY[s.verification] && <Badge tone={VERIFY[s.verification].tone}>{VERIFY[s.verification].text}</Badge>}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
+    <div className="flex h-full flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl px-4 py-8">
+          {turns.length === 0 && (
+            <div className="animate-in py-10 text-center">
+              <div className="ai-gradient mx-auto flex h-14 w-14 items-center justify-center rounded-2xl text-white shadow-lg"><Sparkles size={26} /></div>
+              <h1 className="mt-4 text-2xl font-semibold tracking-tight">Ask Alexandria</h1>
+              <p className="mx-auto mt-2 max-w-md text-sm text-mute">Answers come only from documents you're cleared to read, written for your role, with the sources to prove it.</p>
+              <div className="mx-auto mt-6 grid max-w-xl gap-2">
+                {ideas.map((s) => (
+                  <button key={s} onClick={() => ask(undefined, s)} className="rounded-xl border border-line bg-white px-4 py-3 text-left text-sm shadow-sm transition hover:border-brand/40 hover:shadow">{s}</button>
+                ))}
+              </div>
             </div>
-          </article>
-        ))}
+          )}
+          <div className="space-y-6">
+            {turns.map((t, i) => (
+              <div key={i} className="space-y-4">
+                <div className="flex gap-3 animate-in">
+                  <Avatar name={me?.username} />
+                  <div><div className="font-semibold">{displayName(me?.username)}</div><p className="mt-0.5 text-[14px]">{t}</p></div>
+                </div>
+                <AiAnswer question={t} />
+              </div>
+            ))}
+          </div>
+          <div ref={bottom} />
+        </div>
       </div>
-      <form onSubmit={ask} className="sticky bottom-0 -mx-1 flex gap-2 bg-bg/90 p-1 backdrop-blur" aria-label="Ask a question">
-        <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="e.g. How do I process a refund over $100?" maxLength={2000} aria-label="Question" />
-        <button className="btn btn-primary" disabled={busy || !q.trim()}>{busy ? "Answering…" : "Ask"}</button>
+      <form onSubmit={ask} className="border-t border-line bg-white px-4 py-3" aria-label="Ask a question">
+        <div className="mx-auto flex max-w-3xl items-center gap-2 rounded-2xl border border-line bg-white px-3 py-2 shadow-sm focus-within:border-brand focus-within:ring-2 focus-within:ring-brand/15">
+          <Sparkles size={18} className="text-brand" />
+          <input className="flex-1 bg-transparent py-1.5 text-[15px] outline-none" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask anything about your company's knowledge…" maxLength={2000} aria-label="Question" />
+          <button className="ai-gradient flex h-8 w-8 items-center justify-center rounded-lg text-white disabled:opacity-40" disabled={!q.trim()} aria-label="Ask"><ArrowUp size={16} /></button>
+        </div>
       </form>
-    </Page>
+    </div>
   );
 }

@@ -85,3 +85,22 @@ def test_it_plugs_into_the_answer_pipeline(tmp_path):
     tok = enroll(c, "rep")[0]
     body = c.post("/ask", headers=H(tok), json={"question": "refund over 100"}).json()
     assert body["answer"] == "Ask a team lead [1]." and body["grounded"]
+
+
+def test_api_errors_become_llm_unavailable():
+    import anthropic
+    import httpx
+    import pytest
+    from app.claude_llm import ClaudeLLM
+    from app.llm import LLMUnavailable
+
+    class Broken:
+        class beta:
+            class messages:
+                @staticmethod
+                def stream(**_):
+                    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+                    raise anthropic.AuthenticationError("bad key", response=httpx.Response(401, request=req), body=None)
+
+    with pytest.raises(LLMUnavailable):
+        list(ClaudeLLM(client=Broken()).stream([{"role": "user", "content": "hi"}]))

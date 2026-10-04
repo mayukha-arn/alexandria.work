@@ -14,7 +14,7 @@ import os
 import time
 from typing import Any, Dict, Iterator, List, Optional
 
-from .llm import Completion
+from .llm import Completion, LLMUnavailable
 
 DEFAULT_MODEL = "claude-opus-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -33,6 +33,13 @@ class ClaudeStream:
         self.stop_reason: Optional[str] = None
 
     def __iter__(self) -> Iterator[str]:
+        import anthropic
+        try:
+            yield from self._iter()
+        except anthropic.APIError as exc:       # auth, quota, overload, network: one clean error for the caller
+            raise LLMUnavailable(type(exc).__name__) from exc
+
+    def _iter(self) -> Iterator[str]:
         system, turns = _split(self.messages)
         sent_any = False
         with self.llm.client.beta.messages.stream(

@@ -5,7 +5,7 @@ export function Page({ title, subtitle, actions, children }: { title: string; su
     <div className="mx-auto flex h-full w-full max-w-6xl flex-col gap-4 p-4 md:p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">{title}</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
           {subtitle && <p className="mt-0.5 text-sm text-mute">{subtitle}</p>}
         </div>
         {actions}
@@ -16,8 +16,8 @@ export function Page({ title, subtitle, actions, children }: { title: string; su
 }
 
 const TONES: Record<string, string> = {
-  neutral: "border-line text-mute", good: "border-good/50 text-good", warn: "border-warn/50 text-warn",
-  bad: "border-bad/50 text-bad", brand: "border-brand/60 text-brand",
+  neutral: "border-transparent bg-panel2 text-mute", good: "border-transparent bg-good/10 text-good", warn: "border-transparent bg-warn/10 text-warn",
+  bad: "border-transparent bg-bad/10 text-bad", brand: "border-transparent bg-brand/10 text-brand",
 };
 export function Badge({ children, tone = "neutral", title }: { children: ReactNode; tone?: keyof typeof TONES; title?: string }) {
   return <span title={title} className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${TONES[tone]}`}>{children}</span>;

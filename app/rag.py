@@ -18,7 +18,7 @@ import requests
 import roles as R
 from . import guardrails
 from .chain import ChainError
-from .llm import INSUFFICIENT, build_messages, cited_sources, has_bad_citations
+from .llm import INSUFFICIENT, LLMUnavailable, build_messages, cited_sources, has_bad_citations
 from .store import Store
 from .verify import verify_document
 
@@ -198,7 +198,8 @@ def ask_stream(prep: Prepared, llm: Any, store: Store) -> Iterator[Dict[str, Any
         tail = masker.flush().rstrip() if sent else masker.flush().strip()
         if tail:
             yield {"event": "token", "data": {"text": tail}}
-    except requests.RequestException:
+    except (requests.RequestException, LLMUnavailable):
+        log.warning("language model unavailable during a streamed answer")
         yield {"event": "error", "data": {"detail": "the language model is unavailable; try again shortly"}}
         return
     usage = getattr(stream, "usage", None) or {}

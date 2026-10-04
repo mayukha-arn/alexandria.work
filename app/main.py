@@ -32,6 +32,7 @@ from .documents import DocError, DocumentService
 from .messaging import Messaging, MsgError
 from .realtime import Hub
 from .rag import InputBlocked, ask as rag_ask, ask_stream, prepare as rag_prepare
+from .llm import LLMUnavailable
 from .redaction import render_event
 from .telemetry import SECURITY_EVENTS, Telemetry
 from .verify import verify_document
@@ -653,7 +654,7 @@ def create_app(settings: Optional[Settings] = None, chain: Any = None,
         except InputBlocked:
             # The reasons are audited but not echoed: telling an attacker which rule fired helps them iterate.
             raise HTTPException(400, "Your question was blocked by the security policy.")
-        except requests.RequestException:
+        except (requests.RequestException, LLMUnavailable):
             raise HTTPException(503, "the language model is unavailable; try again shortly")
         return {"answer": a.answer, "sources": a.sources, "grounded": a.grounded, "warnings": a.warnings,
                 "persona": a.persona, "metrics": a.metrics}
